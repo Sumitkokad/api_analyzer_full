@@ -1,0 +1,1431 @@
+/* ==========================================================================
+   Product Tour — Animated Stage & Replica Workspace
+   (Append to App.css or keep imported; preserves all original class names
+   so your existing modal styling, header, footer, and buttons remain intact.)
+   ========================================================================== */
+
+/* -------------------------------------------------------------------------
+   Modal Container & Backdrop Animation
+   ------------------------------------------------------------------------- */
+
+.tour-modal-fadein {
+  animation: tourBackdropFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes tourBackdropFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tour-modal-elevated {
+  animation: tourCardSlideUp 0.38s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 32px 80px -12px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+@keyframes tourCardSlideUp {
+  from {
+    opacity: 0;
+    transform: scale(0.975) translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.tour-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tour-icon-btn {
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.18s ease;
+}
+
+.tour-icon-btn:hover {
+  background: rgba(51, 65, 85, 0.9);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* -------------------------------------------------------------------------
+   Stage & Scene Transitions (Layered Motion)
+   ------------------------------------------------------------------------- */
+
+.tour-stage {
+  position: relative;
+  height: 490px;
+  background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #030712 75%) !important;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tour-scene {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 24px 84px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tour-scene-active {
+  opacity: 1;
+  pointer-events: auto;
+  animation: tourSceneTransition 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes tourSceneTransition {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Ken Burns Motion — Alternating Direction Per Scene
+   ------------------------------------------------------------------------- */
+
+.tour-kenburns {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center;
+  will-change: transform;
+  animation-duration: 8s;
+  animation-timing-function: cubic-bezier(0.25, 1, 0.5, 1);
+  animation-fill-mode: forwards;
+}
+
+.tour-kb-dir-1 { animation-name: tourKb1; }
+.tour-kb-dir-2 { animation-name: tourKb2; }
+.tour-kb-dir-3 { animation-name: tourKb3; }
+.tour-kb-dir-4 { animation-name: tourKb4; }
+.tour-kb-dir-5 { animation-name: tourKb5; }
+
+@keyframes tourKb1 { 0% { transform: scale(1) translate3d(0, 0, 0); } 100% { transform: scale(1.02) translate3d(-3px, -2px, 0); } }
+@keyframes tourKb2 { 0% { transform: scale(1) translate3d(0, 0, 0); } 100% { transform: scale(1.018) translate3d(2px, -3px, 0); } }
+@keyframes tourKb3 { 0% { transform: scale(1) translate3d(0, 0, 0); } 100% { transform: scale(1.02) translate3d(-2px, 3px, 0); } }
+@keyframes tourKb4 { 0% { transform: scale(1) translate3d(0, 0, 0); } 100% { transform: scale(1.018) translate3d(3px, 1px, 0); } }
+@keyframes tourKb5 { 0% { transform: scale(1.02) translate3d(0, -2px, 0); } 100% { transform: scale(1) translate3d(0, 0, 0); } }
+
+.tour-paused .tour-kenburns,
+.tour-paused * {
+  animation-play-state: paused !important;
+}
+
+/* -------------------------------------------------------------------------
+   Captions & Scrim
+   ------------------------------------------------------------------------- */
+
+.tour-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0) 48%, rgba(2, 6, 23, 0.96) 94%);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.tour-caption-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 14px 26px 14px;
+  z-index: 4;
+  pointer-events: none;
+  animation: tourCaptionEnter 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+}
+
+@keyframes tourCaptionEnter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tour-caption-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.tour-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #818cf8;
+  font-family: ui-monospace, monospace;
+}
+
+.tour-tag-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c7d2fe;
+  background: rgba(99, 102, 241, 0.2);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.tour-caption-bar h4 {
+  color: #f8fafc;
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 3px;
+  letter-spacing: -0.01em;
+}
+
+.tour-caption-bar p {
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 76ch;
+  margin: 0;
+}
+
+/* -------------------------------------------------------------------------
+   Realistic Product Frame (Light Workspace Interior)
+   ------------------------------------------------------------------------- */
+
+.tour-device-frame {
+  width: 100%;
+  max-width: 900px;
+  height: 100%;
+  max-height: 385px;
+  background: #f8fafc;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+.tour-chrome {
+  height: 30px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.tour-chrome-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tour-chrome-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.tour-chrome-dot-r { background: #ef4444; }
+.tour-chrome-dot-y { background: #f59e0b; }
+.tour-chrome-dot-g { background: #10b981; }
+
+.tour-chrome-label {
+  font-size: 10.5px;
+  color: #94a3b8;
+  font-family: ui-monospace, monospace;
+}
+
+.tour-chrome-pill {
+  font-size: 9px;
+  font-family: ui-monospace, monospace;
+  color: #64748b;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.tour-device-inner {
+  flex: 1;
+  padding: 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.tour-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tour-view-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.tour-view-sub {
+  margin: 1px 0 0;
+  font-size: 10px;
+  color: #64748b;
+}
+
+.tour-device-frame .panel {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  margin: 0;
+}
+
+.tour-device-frame .editor-header h3,
+.tour-device-frame h3 {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+/* -------------------------------------------------------------------------
+   Scene 1: Contract Comparison Code Layout
+   ------------------------------------------------------------------------- */
+
+.tour-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tour-spec-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.tour-spec-tag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tour-spec-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.tour-code-block {
+  margin: 0;
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #edf2f7;
+  font-family: ui-monospace, monospace;
+  font-size: 9.5px;
+  line-height: 1.45;
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.tour-code-diff-red {
+  color: #dc2626;
+  font-weight: 700;
+  background: #fee2e2;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.tour-info-box {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* -------------------------------------------------------------------------
+   Scene 2: AST Node Pipeline
+   ------------------------------------------------------------------------- */
+
+.tour-node-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tour-pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tour-ast-card {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 7px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.tour-ast-card.is-flagged {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.tour-ast-kind {
+  font-size: 7.5px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.05em;
+}
+
+.tour-ast-id {
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  color: #0f172a;
+}
+
+.tour-ast-card.is-flagged .tour-ast-id {
+  color: #dc2626;
+}
+
+.tour-pipeline-arrow {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.tour-scanline-wrap {
+  position: relative;
+  background: #0b1120;
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tour-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #818cf8, transparent);
+  animation: tourScan 2.2s linear infinite;
+  opacity: 0.85;
+}
+
+@keyframes tourScan {
+  0% { top: 0%; }
+  100% { top: 100%; }
+}
+
+.diff-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.diff-marker {
+  font-weight: 700;
+  width: 12px;
+  text-align: center;
+}
+
+.diff-row.removed { color: #f87171; }
+.diff-row.added { color: #4ade80; }
+.diff-row.modified { color: #38bdf8; }
+
+.tour-node-trail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: #64748b;
+}
+
+.tour-node-trail .tour-arrow { color: #94a3b8; }
+
+.tour-node-hot {
+  color: #3730a3;
+  font-weight: 700;
+  background: #e0e7ff;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* -------------------------------------------------------------------------
+   Scene 3: Breaking Change Review List
+   ------------------------------------------------------------------------- */
+
+.tour-review-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #0f172a;
+}
+
+.tour-pill-filter {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-left: 6px;
+}
+
+.tour-filter-breaking {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #dc2626;
+}
+
+.tour-filter-safe {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #059669;
+}
+
+.change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.change-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.change-item.is-breaking { border-left: 3px solid #dc2626; }
+.change-item.is-safe { border-left: 3px solid #059669; }
+
+.change-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.change-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.change-endpoint {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.change-meta-pill {
+  font-size: 9px;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.badge {
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.badge-breaking {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.badge-safe {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.tour-banner-warning {
+  margin-top: 8px;
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  color: #854d0e;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 9.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* -------------------------------------------------------------------------
+   Scene 4: AI Impact Analysis Box
+   ------------------------------------------------------------------------- */
+
+.analysis-box {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.analysis-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tour-ai-target-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.tour-ai-idx {
+  font-family: ui-monospace, monospace;
+  color: #64748b;
+  font-size: 10.5px;
+}
+
+.tour-breaking-high {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #f87171;
+}
+
+.analysis-section {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.analysis-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #3730a3;
+}
+
+.analysis-section p {
+  margin: 0;
+  font-size: 9.5px;
+  color: #334155;
+  line-height: 1.4;
+}
+
+.component-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.component-pill {
+  font-size: 8.5px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.tour-rag-evidence {
+  background: #0b1120;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #e2e8f0;
+}
+
+.tour-rag-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #818cf8;
+  margin-bottom: 2px;
+}
+
+.tour-rag-text {
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+/* -------------------------------------------------------------------------
+   Scene 5: Audit History Table & Release Gate
+   ------------------------------------------------------------------------- */
+
+.table-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tour-table-head-row {
+  display: grid;
+  grid-template-columns: 45px 1.4fr 1.1fr 0.9fr 1fr;
+  padding: 4px 8px;
+  background: #f8fafc;
+  border-radius: 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.05em;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 45px 1.4fr 1.1fr 0.9fr 1fr;
+  align-items: center;
+  padding: 5px 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  font-size: 9.5px;
+}
+
+.history-row.is-active-audit {
+  border-color: #818cf8;
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25);
+}
+
+.history-id { font-family: ui-monospace, monospace; color: #64748b; }
+.history-project { color: #0f172a; font-weight: 600; }
+.history-metrics { color: #475569; }
+.tour-link-btn {
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+
+.tour-job-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tour-job-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.tour-job-name { font-family: ui-monospace, monospace; font-weight: 700; color: #0f172a; }
+.tour-job-target { color: #64748b; flex: 1; }
+
+.job-progress-track {
+  width: 120px;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.tour-gate-fill {
+  width: 100%;
+  height: 100%;
+  background: #4f46e5;
+  border-radius: 999px;
+  animation: tourGateFill 1.8s ease-out forwards;
+}
+
+@keyframes tourGateFill {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+
+.tour-job-score {
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  color: #64748b;
+}
+
+.tour-gate-banner {
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.tour-gate-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #065f46;
+}
+
+/* -------------------------------------------------------------------------
+   Interactive Timeline & Controls
+   ------------------------------------------------------------------------- */
+
+.real-video-progress {
+  position: relative;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: height 0.15s ease;
+}
+
+.real-video-progress:hover {
+  height: 8px;
+}
+
+.real-video-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #a855f7);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.tour-timeline-pip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tour-timeline-handle {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform 0.15s ease;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.real-video-progress:hover .tour-timeline-handle {
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.tour-timeline-tooltip {
+  position: absolute;
+  bottom: 14px;
+  transform: translateX(-50%);
+  background: #1e293b;
+  color: #f8fafc;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-family: ui-monospace, monospace;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.tour-step-btn {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: #cbd5e1;
+}
+
+.tour-step-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.tour-time-slash {
+  margin: 0 4px;
+  color: #475569;
+}
+
+/* -------------------------------------------------------------------------
+   Chapter Navigation Cards
+   ------------------------------------------------------------------------- */
+
+.video-chapters {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+
+.tour-chapter-btn {
+  padding: 8px 10px;
+  background: #131d33;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.tour-ch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tour-chapter-btn span {
+  color: #6366f1;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tour-ch-head small {
+  font-size: 8.5px;
+  color: #94a3b8;
+}
+
+.tour-chapter-btn strong {
+  color: #f1f5f9;
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tour-chapter-btn:hover {
+  border-color: #6366f1;
+  background: #1e1b4b;
+  transform: translateY(-1px);
+}
+
+.tour-chapter-btn.active {
+  border-color: #818cf8;
+  background: #1e1b4b;
+  box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.4);
+}
+
+.tour-chapter-btn.completed .tour-ch-head small {
+  color: #34d399;
+}
+
+/* -------------------------------------------------------------------------
+   Staged Child Fade-in
+   ------------------------------------------------------------------------- */
+
+.tour-fade-in {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: tourFadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes tourFadeIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tour-pulse-btn {
+  animation: tourBtnPulse 2.4s infinite;
+}
+
+@keyframes tourBtnPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
+}
+
+/* -------------------------------------------------------------------------
+   Responsive & Accessibility
+   ------------------------------------------------------------------------- */
+
+@media (max-width: 860px) {
+  .tour-stage { height: 430px; }
+  .video-chapters { grid-template-columns: repeat(3, 1fr); }
+  .tour-chapter-btn:nth-child(n+4) { display: none; }
+}
+
+@media (max-width: 640px) {
+  .tour-stage { height: 380px; }
+  .tour-editor-grid { grid-template-columns: 1fr; }
+  .tour-table-head-row,
+  .history-row { grid-template-columns: 40px 1.4fr 0.9fr; }
+  .tour-table-head-row span:nth-child(3),
+  .history-row .history-metrics,
+  .tour-table-head-row span:nth-child(5),
+  .history-row .tour-link-btn { display: none; }
+  .tour-caption-bar h4 { font-size: 14px; }
+  .tour-caption-bar p { font-size: 11px; }
+  .video-chapters { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-modal-fadein,
+  .tour-modal-elevated,
+  .tour-scene-active,
+  .tour-kenburns,
+  .tour-fade-in,
+  .tour-pulse-btn,
+  .tour-scanline,
+  .tour-gate-fill {
+    animation: none !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}
+
+
+
+/* Replace the generic scene blur with a cleaner browser-demo transition. */
+.tour-scene-active {
+  animation: tourScenePremiumIn .72s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes tourScenePremiumIn {
+  from { opacity: 0; transform: translate3d(0, 10px, 0) scale(.992); filter: saturate(.94); }
+  55% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); filter: saturate(1); }
+  to { opacity: 1; transform: translate3d(0, -1px, 0) scale(1); filter: saturate(1); }
+}
+
+/* ============================================================================
+   PREMIUM PRODUCT-DEMO MOTION LAYER
+   Inspired by real browser walkthrough videos: guided cursor, deliberate focus,
+   soft camera movement, layered callouts, and restrained transitions.
+   ============================================================================ */
+
+.tour-stage {
+  isolation: isolate;
+  perspective: 1400px;
+}
+
+.tour-stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(99, 102, 241, 0.14), transparent 38%),
+    radial-gradient(circle at 85% 90%, rgba(56, 189, 248, 0.08), transparent 32%);
+}
+
+.tour-scene {
+  overflow: hidden;
+}
+
+.tour-camera {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 50%;
+  animation: tourCameraFloat 9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tourCameraFloat {
+  0% { transform: scale(0.988) translate3d(0, 8px, 0); opacity: 0; }
+  35% { transform: scale(0.997) translate3d(0, 0, 0); opacity: 1; }
+  100% { transform: scale(1.012) translate3d(0, -2px, 0); opacity: 1; }
+}
+
+.tour-scene-1 .tour-camera { animation-duration: 8.5s; }
+.tour-scene-2 .tour-camera { animation-duration: 9s; }
+.tour-scene-3 .tour-camera { animation-duration: 9.2s; }
+.tour-scene-4 .tour-camera { animation-duration: 9.4s; }
+.tour-scene-5 .tour-camera { animation-duration: 8.8s; }
+
+.tour-device-frame {
+  transform-origin: 50% 50%;
+  box-shadow:
+    0 30px 80px rgba(2, 6, 23, 0.46),
+    0 10px 30px rgba(2, 6, 23, 0.22),
+    0 0 0 1px rgba(255,255,255,0.045);
+}
+
+.tour-scene-1 .tour-device-frame { animation: tourDeviceSettle1 8.5s ease both; }
+.tour-scene-2 .tour-device-frame { animation: tourDeviceSettle2 9s ease both; }
+.tour-scene-3 .tour-device-frame { animation: tourDeviceSettle3 9.2s ease both; }
+.tour-scene-4 .tour-device-frame { animation: tourDeviceSettle4 9.4s ease both; }
+.tour-scene-5 .tour-device-frame { animation: tourDeviceSettle5 8.8s ease both; }
+
+@keyframes tourDeviceSettle1 {
+  from { transform: scale(0.995) translate3d(-4px, 5px, 0); }
+  to { transform: scale(1.012) translate3d(0, 0, 0); }
+}
+@keyframes tourDeviceSettle2 {
+  from { transform: scale(1.008) translate3d(4px, 4px, 0); }
+  to { transform: scale(1.018) translate3d(0, -2px, 0); }
+}
+@keyframes tourDeviceSettle3 {
+  from { transform: scale(0.998) translate3d(-3px, -1px, 0); }
+  to { transform: scale(1.01) translate3d(0, 0, 0); }
+}
+@keyframes tourDeviceSettle4 {
+  from { transform: scale(1.004) translate3d(3px, 3px, 0); }
+  to { transform: scale(1.016) translate3d(0, -1px, 0); }
+}
+@keyframes tourDeviceSettle5 {
+  from { transform: scale(1.008) translate3d(0, 4px, 0); }
+  to { transform: scale(1.012) translate3d(0, 0, 0); }
+}
+
+/* Browser walkthrough cue: soft focus + pointer instead of artificial neon effects. */
+.tour-guide-cursor {
+  position: absolute;
+  left: var(--tour-cursor-x);
+  top: var(--tour-cursor-y);
+  z-index: 9;
+  width: 18px;
+  height: 22px;
+  pointer-events: none;
+  transform: translate(-2px, -2px);
+  animation: tourCursorEnter 0.65s cubic-bezier(0.22, 1, 0.36, 1) 0.25s both;
+}
+
+.tour-cursor-dot {
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  width: 11px;
+  height: 15px;
+  background: #ffffff;
+  border: 1.5px solid #0f172a;
+  clip-path: polygon(0 0, 0 100%, 28% 72%, 48% 100%, 59% 94%, 41% 65%, 78% 65%);
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.35));
+}
+
+.tour-cursor-halo {
+  position: absolute;
+  left: -8px;
+  top: -8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(99, 102, 241, 0.7);
+  background: rgba(99, 102, 241, 0.08);
+  animation: tourCursorHalo 1.8s ease-out infinite;
+}
+
+.tour-click-ripple {
+  position: absolute;
+  left: -9px;
+  top: -9px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(129, 140, 248, 0.85);
+  animation: tourClickRipple 2.4s cubic-bezier(0.22, 1, 0.36, 1) 0.8s infinite;
+}
+
+@keyframes tourCursorEnter {
+  from { opacity: 0; transform: translate(-18px, -12px) scale(.85); }
+  to { opacity: 1; transform: translate(-2px, -2px) scale(1); }
+}
+
+@keyframes tourCursorHalo {
+  0%, 100% { transform: scale(.92); opacity: .38; }
+  50% { transform: scale(1.15); opacity: .75; }
+}
+
+@keyframes tourClickRipple {
+  0% { transform: scale(.5); opacity: 0; }
+  18% { opacity: .75; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+
+.tour-focus-ring {
+  position: absolute;
+  left: calc(var(--tour-cursor-x) - 20px);
+  top: calc(var(--tour-cursor-y) - 20px);
+  width: 40px;
+  height: 40px;
+  z-index: 7;
+  pointer-events: none;
+  border-radius: 12px;
+  border: 1px solid rgba(129, 140, 248, 0.28);
+  background: rgba(99, 102, 241, 0.035);
+  box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.055);
+  animation: tourFocusPulse 2.8s ease-in-out infinite;
+}
+
+@keyframes tourFocusPulse {
+  0%, 100% { opacity: .5; transform: scale(.98); }
+  50% { opacity: .95; transform: scale(1.045); }
+}
+
+.tour-guide-callout {
+  position: absolute;
+  left: var(--tour-bubble-x);
+  top: var(--tour-bubble-y);
+  z-index: 8;
+  width: min(250px, 30vw);
+  padding: 10px 12px 11px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.94);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 18px 36px rgba(2, 6, 23, .3);
+  backdrop-filter: blur(10px);
+  animation: tourCalloutIn .55s cubic-bezier(0.22, 1, 0.36, 1) .35s both;
+  pointer-events: none;
+}
+
+.tour-guide-callout::before {
+  content: '';
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  top: -5px;
+  left: 24px;
+  transform: rotate(45deg);
+  background: rgba(15, 23, 42, 0.94);
+  border-left: 1px solid rgba(148, 163, 184, .2);
+  border-top: 1px solid rgba(148, 163, 184, .2);
+}
+
+.tour-callout-kicker {
+  display: block;
+  margin-bottom: 3px;
+  color: #818cf8;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.tour-guide-callout strong {
+  display: block;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tour-guide-callout p {
+  margin: 3px 0 0;
+  color: #94a3b8;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+@keyframes tourCalloutIn {
+  from { opacity: 0; transform: translateY(7px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.tour-scene-meter {
+  width: min(280px, 34vw);
+  height: 2px;
+  margin-top: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.tour-scene-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #818cf8, #c4b5fd);
+  transition: width .16s linear;
+}
+
+.tour-live-hud {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.58);
+  border: 1px solid rgba(255,255,255,.1);
+  color: #cbd5e1;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  backdrop-filter: blur(8px);
+}
+
+.tour-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 0 3px rgba(74, 222, 128, .11);
+  animation: tourLivePulse 1.7s ease-in-out infinite;
+}
+
+.tour-live-sep { color: #475569; }
+
+@keyframes tourLivePulse {
+  0%, 100% { opacity: .6; }
+  50% { opacity: 1; }
+}
+
+/* More lifelike reveal sequence inside the mock application. */
+.tour-fade-in {
+  animation-duration: .62s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.tour-pulse-btn {
+  animation-name: tourActionPulse;
+  animation-duration: 2.4s;
+  animation-iteration-count: infinite;
+}
+
+@keyframes tourActionPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,.18); }
+  45% { box-shadow: 0 0 0 7px rgba(99,102,241,0); }
+}
+
+/* Scene-specific content motion that mimics real scrolling/camera attention. */
+.tour-scene-1 .tour-device-inner { animation: tourContentDrift1 8s ease-out both; }
+.tour-scene-2 .tour-device-inner { animation: tourContentDrift2 8.4s ease-out both; }
+.tour-scene-3 .tour-device-inner { animation: tourContentDrift3 8.2s ease-out both; }
+.tour-scene-4 .tour-device-inner { animation: tourContentDrift4 8.4s ease-out both; }
+.tour-scene-5 .tour-device-inner { animation: tourContentDrift5 8.1s ease-out both; }
+
+@keyframes tourContentDrift1 {
+  from { transform: translateY(7px); }
+  20% { transform: translateY(0); }
+  to { transform: translateY(-2px); }
+}
+@keyframes tourContentDrift2 {
+  from { transform: translateY(6px); }
+  30% { transform: translateY(0); }
+  to { transform: translateY(-5px); }
+}
+@keyframes tourContentDrift3 {
+  from { transform: translateY(5px); }
+  25% { transform: translateY(0); }
+  to { transform: translateY(-3px); }
+}
+@keyframes tourContentDrift4 {
+  from { transform: translateY(5px); }
+  25% { transform: translateY(0); }
+  to { transform: translateY(-4px); }
+}
+@keyframes tourContentDrift5 {
+  from { transform: translateY(5px); }
+  25% { transform: translateY(0); }
+  to { transform: translateY(-2px); }
+}
+
+.tour-step-btn:disabled {
+  opacity: .34;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-camera,
+  .tour-device-frame,
+  .tour-guide-cursor,
+  .tour-cursor-halo,
+  .tour-click-ripple,
+  .tour-focus-ring,
+  .tour-guide-callout,
+  .tour-live-dot,
+  .tour-device-inner {
+    animation: none !important;
+  }
+  .tour-guide-cursor,
+  .tour-focus-ring,
+  .tour-guide-callout {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .tour-guide-callout {
+    width: min(220px, 34vw);
+  }
+  .tour-live-hud {
+    right: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .tour-guide-callout,
+  .tour-focus-ring,
+  .tour-guide-cursor {
+    display: none;
+  }
+  .tour-stage::before { opacity: .6; }
+  .tour-scene-meter { width: 45vw; }
+}
