@@ -1,0 +1,34 @@
+name: API Compatibility
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run API Compatibility Analyzer
+        uses: ./.github/actions/api-compatibility
+        with:
+          api-base-url: ${{ secrets.API_ANALYZER_BASE_URL }}
+          project-id: ${{ secrets.API_ANALYZER_PROJECT_ID }}
+          token: ${{ secrets.API_ANALYZER_TOKEN }}
+          spec-path: openapi.json
+          generate-command: ""
+          baseline-mode: merge-base
+          fail-on-error: "true"
+          poll-timeout-seconds: "600"
+          poll-interval-seconds: "5"

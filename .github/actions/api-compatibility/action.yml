@@ -1,0 +1,446 @@
+name: API Compatibility Analyzer
+description: Compare base and pull-request OpenAPI contracts and enforce the CI gate.
+
+inputs:
+  api-base-url:
+    description: Base URL of the API Analyzer backend.
+    required: true
+
+  project-id:
+    description: API Analyzer project ID.
+    required: true
+
+  token:
+    description: Project-scoped API Analyzer token.
+    required: true
+
+  spec-path:
+    description: Path to the OpenAPI JSON specification.
+    required: true
+
+  generate-command:
+    description: Command used to generate the OpenAPI specification.
+    required: false
+    default: ""
+
+  baseline-mode:
+    description: "Baseline selection mode: merge-base or base."
+    required: false
+    default: merge-base
+
+  fail-on-error:
+    description: Fail the workflow when the analyzer returns ERROR or times out.
+    required: false
+    default: "true"
+
+  poll-timeout-seconds:
+    description: Maximum time to wait for analysis.
+    required: false
+    default: "600"
+
+  poll-interval-seconds:
+    description: Seconds between status requests.
+    required: false
+    default: "5"
+
+outputs:
+  comparison-id:
+    description: Created comparison ID.
+
+  job-id:
+    description: Created analysis job ID.
+
+  gate-status:
+    description: Final CI gate status.
+
+  reason-code:
+    description: Final reason code.
+
+  report-url:
+    description: URL of the detailed comparison report.
+
+runs:
+  using: composite
+  steps:
+
+    - name: Validate GitHub PR context
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+          echo "::error::API Compatibility Analyzer currently requires a pull_request event."
+          exit 1
+        fi
+
+    - name: Prepare CI variables
+      id: prepare
+      shell: bash
+      env:
+        PROJECT_ID: ${{ inputs.project-id }}
+        API_BASE_URL: ${{ inputs.api-base-url }}
+        SPEC_PATH: ${{ inputs.spec-path }}
+      run: |
+        set -euo pipefail
+
+        PR_NUMBER="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+        REPOSITORY="$(jq -r '.repository.full_name' "$GITHUB_EVENT_PATH")"
+        BASE_SHA="$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+        HEAD_SHA="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+
+        echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
+        echo "REPOSITORY=$REPOSITORY" >> "$GITHUB_ENV"
+        echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+        echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+        echo "project-id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+        echo "api-base-url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
+        echo "spec-path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
+
+        echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
+        echo "API_BASE_URL=$API_BASE_URL" >> "$GITHUB_ENV"
+        echo "SPEC_PATH=$SPEC_PATH" >> "$GITHUB_ENV"
+
+        echo "Repository: $REPOSITORY"
+        echo "Pull request: #$PR_NUMBER"
+        echo "Base SHA: $BASE_SHA"
+        echo "Head SHA: $HEAD_SHA"
+
+    - name: Protect fork pull requests
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        IS_FORK="$(jq -r '.pull_request.head.repo.fork' "$GITHUB_EVENT_PATH")"
+
+        if [[ "$IS_FORK" == "true" && -z "$TOKEN" ]]; then
+          echo "::warning::Skipping API Analyzer upload because this is a fork pull request and the project token is unavailable."
+          exit 0
+        fi
+
+    - name: Fetch base and head commits
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        git fetch --no-tags origin "$BASE_SHA"
+        git fetch --no-tags origin "$HEAD_SHA"
+
+        PR_NUMBER="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+
+        git fetch \
+          --no-tags \
+          origin \
+          "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/api-analyzer-pr-${PR_NUMBER}"
+
+    - name: Select baseline
+      id: baseline
+      shell: bash
+      env:
+        BASELINE_MODE: ${{ inputs.baseline-mode }}
+      run: |
+        set -euo pipefail
+
+        case "$BASELINE_MODE" in
+          merge-base)
+            COMPARE_BASE_SHA="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+            ;;
+          base)
+            COMPARE_BASE_SHA="$BASE_SHA"
+            ;;
+          *)
+            echo "::error::Unsupported baseline-mode: $BASELINE_MODE"
+            echo "::error::Supported values: merge-base, base"
+            exit 1
+            ;;
+        esac
+
+        echo "COMPARE_BASE_SHA=$COMPARE_BASE_SHA" >> "$GITHUB_ENV"
+
+        echo "Comparison baseline: $COMPARE_BASE_SHA"
+
+    - name: Create temporary worktrees
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BASE_DIR="$RUNNER_TEMP/api-analyzer-base"
+        HEAD_DIR="$RUNNER_TEMP/api-analyzer-head"
+
+        rm -rf "$BASE_DIR" "$HEAD_DIR"
+
+        git worktree add --detach "$BASE_DIR" "$COMPARE_BASE_SHA"
+        git worktree add --detach "$HEAD_DIR" "$HEAD_SHA"
+
+        echo "BASE_DIR=$BASE_DIR" >> "$GITHUB_ENV"
+        echo "HEAD_DIR=$HEAD_DIR" >> "$GITHUB_ENV"
+
+    - name: Generate or locate base specification
+      shell: bash
+      env:
+        GENERATE_COMMAND: ${{ inputs.generate-command }}
+        SPEC_PATH: ${{ inputs.spec-path }}
+      run: |
+        set -euo pipefail
+
+        cd "$BASE_DIR"
+
+        if [[ -n "$GENERATE_COMMAND" ]]; then
+          echo "Generating base OpenAPI specification..."
+          eval "$GENERATE_COMMAND"
+        fi
+
+        if [[ ! -f "$SPEC_PATH" ]]; then
+          echo "::error::Base specification not found: $BASE_DIR/$SPEC_PATH"
+          exit 1
+        fi
+
+        echo "BASE_SPEC_FILE=$BASE_DIR/$SPEC_PATH" >> "$GITHUB_ENV"
+
+    - name: Generate or locate head specification
+      shell: bash
+      env:
+        GENERATE_COMMAND: ${{ inputs.generate-command }}
+        SPEC_PATH: ${{ inputs.spec-path }}
+      run: |
+        set -euo pipefail
+
+        cd "$HEAD_DIR"
+
+        if [[ -n "$GENERATE_COMMAND" ]]; then
+          echo "Generating head OpenAPI specification..."
+          eval "$GENERATE_COMMAND"
+        fi
+
+        if [[ ! -f "$SPEC_PATH" ]]; then
+          echo "::error::Head specification not found: $HEAD_DIR/$SPEC_PATH"
+          exit 1
+        fi
+
+        echo "HEAD_SPEC_FILE=$HEAD_DIR/$SPEC_PATH" >> "$GITHUB_ENV"
+
+    - name: Validate JSON specifications
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" <<'PY'
+        import json
+        import sys
+
+        for path in sys.argv[1:]:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if not isinstance(data, dict):
+                raise SystemExit(f"OpenAPI specification must be a JSON object: {path}")
+
+            if "openapi" not in data:
+                raise SystemExit(f"Missing 'openapi' field: {path}")
+
+            print(f"Validated: {path}")
+        PY
+
+    - name: Build CI payload
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" > "$RUNNER_TEMP/api-analyzer-payload.json" <<'PY'
+        import json
+        import os
+        import sys
+
+        base_path, head_path = sys.argv[1], sys.argv[2]
+
+        with open(base_path, "r", encoding="utf-8") as f:
+            base_spec = json.load(f)
+
+        with open(head_path, "r", encoding="utf-8") as f:
+            head_spec = json.load(f)
+
+        payload = {
+            "project_id": os.environ["PROJECT_ID"],
+            "idempotency_key": (
+                f"{os.environ['REPOSITORY']}:"
+                f"{os.environ['PR_NUMBER']}:"
+                f"{os.environ['HEAD_SHA']}:"
+                f"{os.environ['COMPARE_BASE_SHA']}"
+            ),
+            "repository": os.environ["REPOSITORY"],
+            "pull_request": int(os.environ["PR_NUMBER"]),
+            "base_sha": os.environ["COMPARE_BASE_SHA"],
+            "head_sha": os.environ["HEAD_SHA"],
+            "base_spec": {
+                "path": os.environ["SPEC_PATH"],
+                "source_type": "generated",
+                "content": base_spec,
+            },
+            "head_spec": {
+                "path": os.environ["SPEC_PATH"],
+                "source_type": "generated",
+                "content": head_spec,
+            },
+            "registered_routes": [],
+            "generator_warnings": [],
+            "adapter": {
+                "name": "customer-action",
+                "version": "1",
+            },
+        }
+
+        print(json.dumps(payload))
+        PY
+
+    - name: Submit CI analysis
+      id: submit
+      shell: bash
+      env:
+        API_BASE_URL: ${{ inputs.api-base-url }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-submit.json"
+
+        HTTP_CODE="$(
+          curl \
+            --silent \
+            --show-error \
+            --output "$RESPONSE_FILE" \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/json" \
+            --data @"$RUNNER_TEMP/api-analyzer-payload.json" \
+            "${API_BASE_URL%/}/api/ci/analyze"
+        )"
+
+        echo "HTTP status: $HTTP_CODE"
+
+        if [[ "$HTTP_CODE" != "202" ]]; then
+          echo "::error::API Analyzer submission failed with HTTP $HTTP_CODE"
+          cat "$RESPONSE_FILE"
+          exit 1
+        fi
+
+        COMPARISON_ID="$(jq -r '.comparison_id' "$RESPONSE_FILE")"
+        JOB_ID="$(jq -r '.job_id' "$RESPONSE_FILE")"
+
+        echo "COMPARISON_ID=$COMPARISON_ID" >> "$GITHUB_ENV"
+        echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+
+        echo "comparison-id=$COMPARISON_ID" >> "$GITHUB_OUTPUT"
+        echo "job-id=$JOB_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Poll analysis status
+      id: poll
+      shell: bash
+      env:
+        API_BASE_URL: ${{ inputs.api-base-url }}
+        TOKEN: ${{ inputs.token }}
+        TIMEOUT_SECONDS: ${{ inputs.poll-timeout-seconds }}
+        POLL_INTERVAL: ${{ inputs.poll-interval-seconds }}
+      run: |
+        set -euo pipefail
+
+        START_TIME="$(date +%s)"
+
+        while true; do
+          RESPONSE="$(
+            curl \
+              --silent \
+              --show-error \
+              --fail \
+              --request GET \
+              --header "Authorization: Bearer $TOKEN" \
+              "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/"
+          )"
+
+          STATUS="$(echo "$RESPONSE" | jq -r '.status // ""')"
+          GATE_STATUS="$(echo "$RESPONSE" | jq -r '.gate_status // ""')"
+          REASON_CODE="$(echo "$RESPONSE" | jq -r '.reason_code // ""')"
+          PROGRESS="$(echo "$RESPONSE" | jq -r '.progress // 0')"
+          STAGE="$(echo "$RESPONSE" | jq -r '.stage // ""')"
+          REPORT_URL="$(echo "$RESPONSE" | jq -r '.report_url // ""')"
+
+          echo "status=$STATUS progress=$PROGRESS stage=$STAGE gate=$GATE_STATUS"
+
+          if [[ "$STATUS" == "completed" || "$STATUS" == "failed" || "$STATUS" == "cancelled" ]]; then
+            echo "GATE_STATUS=$GATE_STATUS" >> "$GITHUB_ENV"
+            echo "REASON_CODE=$REASON_CODE" >> "$GITHUB_ENV"
+            echo "REPORT_URL=$REPORT_URL" >> "$GITHUB_ENV"
+
+            echo "gate-status=$GATE_STATUS" >> "$GITHUB_OUTPUT"
+            echo "reason-code=$REASON_CODE" >> "$GITHUB_OUTPUT"
+            echo "report-url=$REPORT_URL" >> "$GITHUB_OUTPUT"
+
+            break
+          fi
+
+          NOW="$(date +%s)"
+          ELAPSED="$((NOW - START_TIME))"
+
+          if (( ELAPSED >= TIMEOUT_SECONDS )); then
+            echo "::error::API Analyzer analysis timed out after ${TIMEOUT_SECONDS}s."
+            exit 1
+          fi
+
+          sleep "$POLL_INTERVAL"
+        done
+
+    - name: Evaluate CI gate
+      shell: bash
+      env:
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: |
+        set -euo pipefail
+
+        NORMALIZED_GATE="$(echo "$GATE_STATUS" | tr '[:upper:]' '[:lower:]')"
+
+        echo "Final gate: $NORMALIZED_GATE"
+        echo "Reason: ${REASON_CODE:-none}"
+
+        if [[ -n "${REPORT_URL:-}" ]]; then
+          echo "Report: $REPORT_URL"
+        fi
+
+        case "$NORMALIZED_GATE" in
+          pass)
+            exit 0
+            ;;
+
+          warn)
+            echo "::warning::API compatibility analysis returned WARN."
+            exit 0
+            ;;
+
+          fail)
+            echo "::error::API compatibility gate returned FAIL."
+            exit 1
+            ;;
+
+          error|"")
+            if [[ "$FAIL_ON_ERROR" == "true" ]]; then
+              echo "::error::API compatibility analysis could not complete."
+              exit 1
+            fi
+
+            echo "::warning::Analyzer returned ERROR, but fail-on-error=false."
+            exit 0
+            ;;
+
+          *)
+            echo "::error::Unknown gate status: $GATE_STATUS"
+            exit 1
+            ;;
+        esac
+
+    - name: Cleanup worktrees
+      if: always()
+      shell: bash
+      run: |
+        git worktree remove "$BASE_DIR" --force 2>/dev/null || true
+        git worktree remove "$HEAD_DIR" --force 2>/dev/null || true
