@@ -1263,6 +1263,11 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare }) {
   const [generateCommand, setGenerateCommand] = useState('')
   const [baselineMode, setBaselineMode] = useState('merge-base')
   const [copied, setCopied] = useState(false)
+    // ADD THESE
+  const [ciToken, setCiToken] = useState('')
+  const [tokenLoading, setTokenLoading] = useState(false)
+  const [tokenCopied, setTokenCopied] = useState(false)
+  const [tokenError, setTokenError] = useState('')
 
   useEffect(() => {
     if (!projectId && projects.length > 0) {
@@ -1320,6 +1325,46 @@ jobs:
       setCopied(false)
     }
   }
+
+  const generateCIToken = async () => {
+  if (!projectId) {
+    setTokenError('Please select a project first.')
+    return
+  }
+
+  setTokenLoading(true)
+  setTokenError('')
+  setCiToken('')
+  setTokenCopied(false)
+
+  try {
+    const data = await apiFetch(`/projects/${projectId}/tokens/`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'GitHub Actions CI',
+      }),
+    })
+
+    setCiToken(data.token || '')
+  } catch (error) {
+    setTokenError(error.message || 'Failed to generate CI token.')
+  } finally {
+    setTokenLoading(false)
+  }
+}
+
+const copyCIToken = async () => {
+  if (!ciToken) return
+
+  try {
+    await navigator.clipboard.writeText(ciToken)
+    setTokenCopied(true)
+    window.setTimeout(() => setTokenCopied(false), 2000)
+  } catch (error) {
+    console.error('Could not copy CI token:', error)
+    setTokenCopied(false)
+  }
+}
 
   const connectedRuns = comparisons.filter(
     (comparison) =>
@@ -1491,9 +1536,60 @@ jobs:
                   <span className="change-endpoint">API_ANALYZER_TOKEN</span>
                 </div>
               </div>
+
               <div className="change-meta">
-                Your project-scoped CI token. Keep this secret and never commit it.
+                Generate a project-scoped CI token for GitHub Actions.
               </div>
+
+              <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={generateCIToken}
+                  disabled={tokenLoading || !projectId}
+                >
+                  {tokenLoading ? 'Generating…' : 'Generate CI Token'}
+                </button>
+
+                {ciToken && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={copyCIToken}
+                  >
+                    {tokenCopied ? 'Copied' : 'Copy Token'}
+                  </button>
+                )}
+              </div>
+
+              {ciToken && (
+                <div style={{ marginTop: 12 }}>
+                  <div className="notice notice-warning">
+                    <span className="notice-body">
+                      Copy this token now. It will not be shown again.
+                    </span>
+                  </div>
+
+                  <code
+                    style={{
+                      display: 'block',
+                      marginTop: 10,
+                      padding: 12,
+                      borderRadius: 8,
+                      wordBreak: 'break-all',
+                      background: 'rgba(8, 12, 24, 0.88)',
+                    }}
+                  >
+                    {ciToken}
+                  </code>
+                </div>
+              )}
+
+              {tokenError && (
+                <div className="notice notice-error" style={{ marginTop: 12 }}>
+                  <span className="notice-body">{tokenError}</span>
+                </div>
+              )}
             </article>
           </div>
 
