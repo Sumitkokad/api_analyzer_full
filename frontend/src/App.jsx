@@ -597,10 +597,11 @@ export default function App() {
 
         {route === 'github' && (
           <GitHubCIPage
-            projects={projects}
-            comparisons={comparisons}
-            onOpenCompare={() => { window.location.hash = '#/compare' }}
-          />
+          projects={projects}
+          comparisons={comparisons}
+          onOpenCompare={() => { window.location.hash = '#/compare' }}
+          apiFetch={apiFetch}
+        />
         )}
       </main>
 
@@ -1255,7 +1256,7 @@ function JsonInline({ value }) {
    GitHub CI Setup
    ========================================================================== */
 
-function GitHubCIPage({ projects, comparisons, onOpenCompare }) {
+function GitHubCIPage({ projects, comparisons, onOpenCompare, apiFetch }) {
   const [projectId, setProjectId] = useState(projects[0]?.id || '')
   const [repository, setRepository] = useState('')
   const [analyzerBaseUrl, setAnalyzerBaseUrl] = useState('')
