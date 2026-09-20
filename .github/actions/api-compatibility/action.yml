@@ -334,6 +334,38 @@ runs:
 
         echo "comparison-id=$COMPARISON_ID" >> "$GITHUB_OUTPUT"
         echo "job-id=$JOB_ID" >> "$GITHUB_OUTPUT"
+    - name: Process queued analysis job
+      shell: bash
+      env:
+        API_BASE_URL: ${{ inputs.api-base-url }}
+        TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-process.json"
+
+        HTTP_CODE="$(
+          curl \
+            --silent \
+            --show-error \
+            --output "$RESPONSE_FILE" \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            "${API_BASE_URL%/}/api/ci/jobs/${JOB_ID}/process"
+        )"
+
+        echo "HTTP status: $HTTP_CODE"
+
+        if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "202" ]]; then
+          echo "::error::Failed to process API Analyzer job."
+          cat "$RESPONSE_FILE"
+          exit 1
+        fi
+
+        cat "$RESPONSE_FILE"
 
     - name: Poll analysis status
       id: poll
