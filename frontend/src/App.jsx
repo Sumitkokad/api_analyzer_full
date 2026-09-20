@@ -152,13 +152,41 @@ export default function App() {
   const apiFetch = useCallback(async (path, options = {}) => {
     const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
     if (session.token) headers.Authorization = `Token ${session.token}`
+
     const response = await fetch(`${API_BASE}${path}`, { ...options, headers })
+
     if (response.status === 204) return null
+
     const data = await response.json().catch(() => ({}))
+
     if (!response.ok) {
-      const errorMsg = typeof data === 'string' ? data : (data?.detail || JSON.stringify(data))
+      let errorMsg = `Request failed with status ${response.status}.`
+
+      if (typeof data === 'string' && data.trim()) {
+        errorMsg = data
+      } else if (data?.detail) {
+        errorMsg = String(data.detail)
+      } else if (data && typeof data === 'object') {
+        const messages = []
+
+        Object.entries(data).forEach(([field, value]) => {
+          if (Array.isArray(value)) {
+            messages.push(`${field}: ${value.join(' ')}`)
+          } else if (value && typeof value === 'object') {
+            messages.push(`${field}: ${JSON.stringify(value)}`)
+          } else if (value) {
+            messages.push(`${field}: ${value}`)
+          }
+        })
+
+        if (messages.length) {
+          errorMsg = messages.join(' | ')
+        }
+      }
+
       throw new Error(errorMsg)
     }
+
     return data
   }, [session.token])
 
@@ -233,26 +261,73 @@ export default function App() {
     setLoading(true)
     setNotice({ text: '', type: 'info' })
     setRunPhase('project')
+
     try {
       let projectId = form.projectId
+
+      // Reuse an existing project when the user has not explicitly selected one.
+      // This prevents duplicate-project 500 errors for repeated audits.
       if (!projectId) {
-        const project = await apiFetch('/projects/', {
-          method: 'POST',
-          body: JSON.stringify({ name: form.projectName, description: 'Created from OpenAPI Analyzer pipeline.' }),
-        })
-        projectId = project.id
+        const requestedName = String(form.projectName || '').trim()
+
+        const existingProject = projects.find(
+          (project) =>
+            String(project.name || '').trim().toLowerCase() ===
+            requestedName.toLowerCase()
+        )
+
+        if (existingProject) {
+          projectId = existingProject.id
+        } else {
+          if (!requestedName) {
+            throw new Error('Project name is required.')
+          }
+
+          const project = await apiFetch('/projects/', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: requestedName,
+              description: 'Created from OpenAPI Analyzer pipeline.',
+            }),
+          })
+
+          projectId = project.id
+
+          setProjects((current) => {
+            const alreadyExists = current.some(
+              (item) => String(item.id) === String(project.id)
+            )
+            return alreadyExists ? current : [...current, project]
+          })
+        }
       }
 
       setRunPhase('specs')
-      const oldContent = JSON.parse(form.oldSpec)
-      const newContent = JSON.parse(form.newSpec)
+
+      let oldContent
+      let newContent
+
+      try {
+        oldContent = JSON.parse(form.oldSpec)
+      } catch {
+        throw new Error('Baseline specification is not valid JSON.')
+      }
+
+      try {
+        newContent = JSON.parse(form.newSpec)
+      } catch {
+        throw new Error('Proposed specification is not valid JSON.')
+      }
 
       const oldSpec = await apiFetch('/specifications/', {
         method: 'POST',
         body: JSON.stringify({
           project: projectId,
           name: form.oldName,
-          version: form.oldVersion || oldContent.info?.version || '1.0.0',
+          version:
+            form.oldVersion ||
+            oldContent.info?.version ||
+            '1.0.0',
           content: oldContent,
           raw_text: form.oldSpec,
         }),
@@ -263,29 +338,44 @@ export default function App() {
         body: JSON.stringify({
           project: projectId,
           name: form.newName,
-          version: form.newVersion || newContent.info?.version || '2.0.0',
+          version:
+            form.newVersion ||
+            newContent.info?.version ||
+            '2.0.0',
           content: newContent,
           raw_text: form.newSpec,
         }),
       })
 
       setRunPhase('comparison')
+
       const comparison = await apiFetch('/comparisons/', {
         method: 'POST',
-        body: JSON.stringify({ project: projectId, old_specification: oldSpec.id, new_specification: newSpec.id }),
+        body: JSON.stringify({
+          project: projectId,
+          old_specification: oldSpec.id,
+          new_specification: newSpec.id,
+        }),
       })
 
       setActiveComparison(comparison)
-      showNotice('Comparison completed successfully! Results and AI analysis are ready below.', 'success')
+
+      showNotice(
+        'Comparison completed successfully! Results and AI analysis are ready below.',
+        'success'
+      )
+
       await refreshData()
       window.location.hash = '#/dashboard'
     } catch (error) {
+      console.error('Compatibility audit failed:', error)
       showNotice(error.message, 'error')
     } finally {
       setLoading(false)
       setRunPhase(null)
     }
   }
+
 
   async function createJob(comparisonId) {
     const comparison = comparisons.find((item) => String(item.id) === String(comparisonId))
@@ -336,6 +426,7 @@ export default function App() {
     { id: 'compare', label: 'New Compare', icon: IconCompare },
     { id: 'history', label: 'History', icon: IconHistory, badge: comparisons.length },
     { id: 'jobs', label: 'AI Jobs', icon: IconJobs, badge: jobs.length },
+    { id: 'github', label: 'GitHub CI', icon: IconGithub },
     { id: 'demo', label: 'Product Demo', icon: IconPlayCircle },
   ]
 
@@ -500,6 +591,14 @@ export default function App() {
             jobs={jobs}
             comparisons={comparisons}
             onCreateJob={createJob}
+          />
+        )}
+
+        {route === 'github' && (
+          <GitHubCIPage
+            projects={projects}
+            comparisons={comparisons}
+            onOpenCompare={() => { window.location.hash = '#/compare' }}
           />
         )}
       </main>
@@ -1152,12 +1251,366 @@ function JsonInline({ value }) {
 }
 
 /* ==========================================================================
+   GitHub CI Setup
+   ========================================================================== */
+
+function GitHubCIPage({ projects, comparisons, onOpenCompare }) {
+  const [projectId, setProjectId] = useState(projects[0]?.id || '')
+  const [repository, setRepository] = useState('')
+  const [analyzerBaseUrl, setAnalyzerBaseUrl] = useState('')
+  const [specPath, setSpecPath] = useState('openapi.json')
+  const [generateCommand, setGenerateCommand] = useState('')
+  const [baselineMode, setBaselineMode] = useState('merge-base')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!projectId && projects.length > 0) {
+      setProjectId(projects[0].id)
+    }
+  }, [projects, projectId])
+
+  const selectedProject = projects.find(
+    (project) => String(project.id) === String(projectId)
+  )
+
+  const workflowYaml = `name: API Compatibility
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run API Compatibility Analyzer
+        uses: ./.github/actions/api-compatibility
+        with:
+          api-base-url: \${{ secrets.API_ANALYZER_BASE_URL }}
+          project-id: \${{ secrets.API_ANALYZER_PROJECT_ID }}
+          token: \${{ secrets.API_ANALYZER_TOKEN }}
+          spec-path: ${specPath || 'openapi.json'}
+          generate-command: ${generateCommand}
+          baseline-mode: ${baselineMode}
+          fail-on-error: "true"
+          poll-timeout-seconds: "600"
+          poll-interval-seconds: "5"
+`
+
+  const copyWorkflow = async () => {
+    try {
+      await navigator.clipboard.writeText(workflowYaml)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch (error) {
+      console.error('Could not copy GitHub workflow:', error)
+      setCopied(false)
+    }
+  }
+
+  const connectedRuns = comparisons.filter(
+    (comparison) =>
+      comparison.repository ||
+      comparison.pull_request_number ||
+      comparison.base_sha ||
+      comparison.head_sha
+  )
+
+  return (
+    <section className="panel">
+      <div className="section-title">
+        <div>
+          <h2>GitHub CI Integration</h2>
+          <p>
+            Configure the GitHub Actions workflow already included in your analyzer project.
+            This page prepares the repository-side CI settings; GitHub App OAuth is a later integration step.
+          </p>
+        </div>
+        <span className="status-pill">
+          {connectedRuns.length} CI-linked runs
+        </span>
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="panel">
+          <div className="section-title">
+            <div>
+              <h3>1. Project & Repository</h3>
+              <p>Choose the analyzer project that your GitHub Action will submit results to.</p>
+            </div>
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>Analyzer Project</span>
+              <select
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+              >
+                <option value="">Select a project</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name} (#{project.id})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              <span>GitHub Repository</span>
+              <input
+                type="url"
+                value={repository}
+                onChange={(event) => setRepository(event.target.value)}
+                placeholder="https://github.com/owner/repository"
+              />
+            </label>
+
+            <label>
+              <span>Analyzer Backend URL</span>
+              <input
+                type="url"
+                value={analyzerBaseUrl}
+                onChange={(event) => setAnalyzerBaseUrl(event.target.value)}
+                placeholder="https://api-analyzer-backend.onrender.com"
+              />
+            </label>
+
+            <label>
+              <span>OpenAPI Specification Path</span>
+              <input
+                type="text"
+                value={specPath}
+                onChange={(event) => setSpecPath(event.target.value)}
+                placeholder="openapi.json"
+              />
+            </label>
+
+            <label>
+              <span>Generate Command</span>
+              <input
+                type="text"
+                value={generateCommand}
+                onChange={(event) => setGenerateCommand(event.target.value)}
+                placeholder="Leave empty when openapi.json is committed"
+              />
+            </label>
+
+            <label>
+              <span>Baseline Mode</span>
+              <select
+                value={baselineMode}
+                onChange={(event) => setBaselineMode(event.target.value)}
+              >
+                <option value="merge-base">merge-base</option>
+                <option value="target_branch_head">target branch head</option>
+                <option value="last_released">last released</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="job-summary-panel" style={{ marginTop: 18 }}>
+            <div className="job-meta-grid">
+              <div className="job-meta-item">
+                <small>Selected Project</small>
+                <strong>
+                  {selectedProject
+                    ? `${selectedProject.name} (#${selectedProject.id})`
+                    : 'Not selected'}
+                </strong>
+              </div>
+
+              <div className="job-meta-item">
+                <small>Repository</small>
+                <strong>{repository || 'Not configured'}</strong>
+              </div>
+
+              <div className="job-meta-item">
+                <small>Spec Source</small>
+                <strong>{specPath || 'openapi.json'}</strong>
+              </div>
+
+              <div className="job-meta-item">
+                <small>Baseline</small>
+                <strong>{baselineMode}</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="section-title">
+            <div>
+              <h3>2. Required GitHub Secrets</h3>
+              <p>Store these as repository or organization secrets in GitHub.</p>
+            </div>
+          </div>
+
+          <div className="change-list">
+            <article className="change-item is-safe">
+              <div className="change-heading">
+                <div className="change-title-group">
+                  <span className="change-index">01</span>
+                  <span className="change-endpoint">API_ANALYZER_BASE_URL</span>
+                </div>
+              </div>
+              <div className="change-meta">
+                Backend URL used by the GitHub Action.
+              </div>
+            </article>
+
+            <article className="change-item is-safe">
+              <div className="change-heading">
+                <div className="change-title-group">
+                  <span className="change-index">02</span>
+                  <span className="change-endpoint">API_ANALYZER_PROJECT_ID</span>
+                </div>
+              </div>
+              <div className="change-meta">
+                Analyzer project ID: {projectId || 'select a project first'}.
+              </div>
+            </article>
+
+            <article className="change-item is-safe">
+              <div className="change-heading">
+                <div className="change-title-group">
+                  <span className="change-index">03</span>
+                  <span className="change-endpoint">API_ANALYZER_TOKEN</span>
+                </div>
+              </div>
+              <div className="change-meta">
+                Your project-scoped CI token. Keep this secret and never commit it.
+              </div>
+            </article>
+          </div>
+
+          <div className="notice notice-info" style={{ marginTop: 18 }}>
+            <span className="notice-icon"><IconInfo /></span>
+            <span className="notice-body">
+              The token is intentionally not stored in React state or browser storage.
+              Add the secret directly in GitHub.
+            </span>
+          </div>
+        </section>
+      </div>
+
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="section-title">
+          <div>
+            <h3>3. GitHub Actions Workflow</h3>
+            <p>
+              Save this as <code>.github/workflows/api-compatibility.yml</code> in the customer repository.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="primary"
+            onClick={copyWorkflow}
+          >
+            <IconGithub />
+            {copied ? 'Copied' : 'Copy Workflow'}
+          </button>
+        </div>
+
+        <pre
+          style={{
+            margin: 0,
+            padding: 18,
+            overflowX: 'auto',
+            borderRadius: 12,
+            background: 'rgba(8, 12, 24, 0.88)',
+            color: '#d9e2ff',
+            fontSize: 13,
+            lineHeight: 1.55,
+          }}
+        >
+          <code>{workflowYaml}</code>
+        </pre>
+      </section>
+
+      <section className="panel" style={{ marginTop: 18 }}>
+        <div className="section-title">
+          <div>
+            <h3>4. Current GitHub Integration Scope</h3>
+            <p>What is available right now in this frontend.</p>
+          </div>
+        </div>
+
+        <div className="metrics-grid">
+          <Metric
+            label="CI Workflow"
+            value="Ready"
+            sub="Customer-side GitHub Action"
+            icon={IconGithub}
+          />
+          <Metric
+            label="PR Analysis"
+            value="Ready"
+            sub="POST /api/ci/analyze"
+            icon={IconCompare}
+          />
+          <Metric
+            label="GitHub App OAuth"
+            value="Later"
+            sub="Backend installation flow not exposed here yet"
+            icon={IconCpu}
+          />
+          <Metric
+            label="Project"
+            value={projectId ? `#${projectId}` : '—'}
+            sub={selectedProject?.name || 'Select an analyzer project'}
+            icon={IconLayers}
+          />
+        </div>
+
+        <div className="modal-actions" style={{ marginTop: 18 }}>
+          <button type="button" className="secondary" onClick={onOpenCompare}>
+            <IconCompare /> Run Manual Comparison
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => window.open('https://github.com/', '_blank', 'noopener,noreferrer')}
+          >
+            <IconGithub /> Open GitHub
+          </button>
+        </div>
+
+        {analyzerBaseUrl && (
+          <div className="notice notice-info" style={{ marginTop: 18 }}>
+            <span className="notice-icon"><IconInfo /></span>
+            <span className="notice-body">
+              Configure <strong>API_ANALYZER_BASE_URL</strong> in GitHub as:
+              {' '}
+              {analyzerBaseUrl}
+            </span>
+          </div>
+        )}
+      </section>
+    </section>
+  )
+}
+
+/* ==========================================================================
    Compare View
    ========================================================================== */
 
 function ComparePage({ projects, loading, runPhase, onRun }) {
   const [form, setForm] = useState({
-    projectId: projects[0]?.id || '',
+    projectId: '',
     projectName: 'Main API Service',
     oldName: 'Users API Production',
     newName: 'Users API Staging',
@@ -1166,6 +1619,18 @@ function ComparePage({ projects, loading, runPhase, onRun }) {
     oldSpec: sampleOldSpec,
     newSpec: sampleNewSpec,
   })
+
+  const projectSeededRef = useRef(false)
+
+  useEffect(() => {
+    if (!projectSeededRef.current && projects.length > 0) {
+      setForm((current) => ({
+        ...current,
+        projectId: projects[0].id,
+      }))
+      projectSeededRef.current = true
+    }
+  }, [projects])
 
   const update = (field, value) => setForm((curr) => ({ ...curr, [field]: value }))
 
@@ -1225,6 +1690,9 @@ function ComparePage({ projects, loading, runPhase, onRun }) {
                 onChange={(e) => update('projectName', e.target.value)}
                 required
               />
+              <small style={{ marginTop: 6, opacity: 0.7 }}>
+                An existing project with this name will be reused automatically.
+              </small>
             </label>
           )}
 
@@ -2261,6 +2729,14 @@ function IconSkipForward() {
     <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none">
       <polygon points="5 4 15 12 5 20 5 4" />
       <line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function IconGithub() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 .7a11.3 11.3 0 0 0-3.57 22.02c.57.1.78-.25.78-.55v-2.02c-3.18.7-3.85-1.35-3.85-1.35-.52-1.34-1.27-1.7-1.27-1.7-1.04-.72.08-.7.08-.7 1.15.08 1.75 1.18 1.75 1.18 1.02 1.75 2.67 1.25 3.32.96.1-.75.4-1.25.72-1.54-2.54-.29-5.21-1.27-5.21-5.65 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.13 1.17a10.85 10.85 0 0 1 5.69 0c2.17-1.48 3.13-1.17 3.13-1.17.62 1.57.23 2.73.11 3.02.73.8 1.18 1.82 1.18 3.07 0 4.39-2.68 5.35-5.23 5.63.41.36.77 1.07.77 2.16v3.19c0 .31.21.66.79.55A11.3 11.3 0 0 0 12 .7Z" />
     </svg>
   )
 }
