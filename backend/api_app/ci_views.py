@@ -1,7 +1,7 @@
 import hashlib
 import logging
 
-from django.db import transaction
+from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.parsers import JSONParser
@@ -12,6 +12,7 @@ from .ci_service import (
     CIValidationError,
     build_ci_response,
     create_ci_submission,
+    dispatch_ci_submission,
 )
 from .models import ProjectToken
 
@@ -19,7 +20,11 @@ from .models import ProjectToken
 logger = logging.getLogger(__name__)
 
 
-MAX_CI_BODY_BYTES = 8 * 1024 * 1024
+MAX_CI_BODY_BYTES = getattr(
+    settings,
+    "API_ANALYZER_MAX_CI_BODY_BYTES",
+    16 * 1024 * 1024,
+)
 
 
 def _get_bearer_token(request):
@@ -80,8 +85,20 @@ class CIAnalyzeView(APIView):
     """
     POST /api/ci/analyze
 
-    Authenticates a project-scoped CI token and creates
-    a queued comparison + analysis job.
+    Authenticates a project-scoped CI token, creates the immutable
+    CI comparison/job records, and then dispatches execution according
+    to the backend execution policy.
+
+    Execution policy:
+
+        small contract
+            -> synchronous execution
+
+        large contract + worker enabled
+            -> asynchronous execution
+
+        large contract + worker disabled
+            -> terminal capacity error
     """
 
     parser_classes = (JSONParser,)
@@ -144,7 +161,7 @@ class CIAnalyzeView(APIView):
         payload = request.data
 
         # ---------------------------------------------------------
-        # 4. Project identity must match the authenticated token
+        # 4. Project identity must match authenticated token
         # ---------------------------------------------------------
         requested_project_id = payload.get(
             "project_id"
@@ -171,14 +188,13 @@ class CIAnalyzeView(APIView):
             )
 
         # ---------------------------------------------------------
-        # 5. Create idempotent CI submission
+        # 5. Create immutable/idempotent submission
         # ---------------------------------------------------------
         try:
-            with transaction.atomic():
-                result = create_ci_submission(
-                    project=project,
-                    payload=payload,
-                )
+            result = create_ci_submission(
+                project=project,
+                payload=payload,
+            )
 
         except CIValidationError as exc:
             return Response(
@@ -202,10 +218,57 @@ class CIAnalyzeView(APIView):
             )
 
         # ---------------------------------------------------------
-        # 6. Return machine-readable CI response
+        # 6. Dispatch AFTER the database transaction has committed
+        # ---------------------------------------------------------
+        #
+        # This is important.
+        #
+        # create_ci_submission() commits:
+        #
+        #   APISpecification
+        #   APISpecification
+        #   Comparison
+        #   AnalysisJob
+        #
+        # before dispatch_ci_submission() can execute the analysis.
+        #
+        try:
+            result = dispatch_ci_submission(result)
+
+        except Exception:
+            logger.exception(
+                "Unexpected CI dispatch error for project %s",
+                project.pk,
+            )
+
+            return Response(
+                {
+                    "detail": "Unable to dispatch CI analysis request."
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # ---------------------------------------------------------
+        # 7. Build machine-readable response
         # ---------------------------------------------------------
         response_data = build_ci_response(result)
 
+        current_status = response_data.get(
+            "status"
+        )
+
+        # Synchronous execution has already completed.
+        if current_status in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            return Response(
+                response_data,
+                status=status.HTTP_200_OK,
+            )
+
+        # Asynchronous execution remains queued/running.
         return Response(
             response_data,
             status=status.HTTP_202_ACCEPTED,

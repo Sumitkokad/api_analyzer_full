@@ -43,6 +43,116 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 
+# ============================================================
+# API ANALYZER EXECUTION SETTINGS
+# ============================================================
+
+# Background worker execution.
+#
+# Current Render Free deployment does not have a separate worker,
+# so keep this disabled for now.
+#
+# Later, when a background worker is deployed:
+# API_ANALYZER_WORKER_ENABLED=true
+API_ANALYZER_WORKER_ENABLED = (
+    os.getenv("API_ANALYZER_WORKER_ENABLED", "false").lower() == "true"
+)
+
+
+# Maximum size of each individual OpenAPI specification.
+#
+# Base specification: <= 5 MB
+# Head specification: <= 5 MB
+API_ANALYZER_MAX_SPEC_BYTES = int(
+    os.getenv(
+        "API_ANALYZER_MAX_SPEC_BYTES",
+        str(5 * 1024 * 1024),
+    )
+)
+
+
+# Maximum number of API operations allowed in each specification.
+#
+# This prevents very large contracts from consuming excessive
+# CPU/memory during comparison.
+API_ANALYZER_MAX_OPERATIONS = int(
+    os.getenv(
+        "API_ANALYZER_MAX_OPERATIONS",
+        "200",
+    )
+)
+
+
+# Maximum amount of time allowed for synchronous analysis.
+#
+# Keep this below the Gunicorn request timeout that we will configure
+# later.
+API_ANALYZER_SYNC_MAX_RUNTIME_SECONDS = int(
+    os.getenv(
+        "API_ANALYZER_SYNC_MAX_RUNTIME_SECONDS",
+        "90",
+    )
+)
+
+
+# Maximum time a queued CI job may remain unprocessed.
+#
+# This prevents GitHub Actions from polling forever when no worker
+# is available.
+API_ANALYZER_QUEUED_MAX_AGE_SECONDS = int(
+    os.getenv(
+        "API_ANALYZER_QUEUED_MAX_AGE_SECONDS",
+        "60",
+    )
+)
+
+
+# Maximum complete CI request size.
+#
+# Two specifications can each be up to 5 MB, so 8 MB is too small.
+# 16 MB gives enough room for both specifications plus metadata.
+API_ANALYZER_MAX_CI_BODY_BYTES = int(
+    os.getenv(
+        "API_ANALYZER_MAX_CI_BODY_BYTES",
+        str(16 * 1024 * 1024),
+    )
+)
+
+
+# ============================================================
+# GITHUB APP INTEGRATION
+# ============================================================
+# Keep all GitHub App secrets in environment variables. Never commit
+# the private key or client secret to the repository.
+GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
+GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
+GITHUB_APP_CLIENT_ID = os.getenv("GITHUB_APP_CLIENT_ID", "")
+GITHUB_APP_CLIENT_SECRET = os.getenv("GITHUB_APP_CLIENT_SECRET", "")
+GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
+GITHUB_APP_CALLBACK_URL = os.getenv(
+    "GITHUB_APP_CALLBACK_URL",
+    "http://localhost:8000/api/github/install/callback/",
+)
+GITHUB_APP_FRONTEND_URL = os.getenv(
+    "GITHUB_APP_FRONTEND_URL",
+    "http://localhost:5173",
+).rstrip("/")
+GITHUB_API_URL = os.getenv(
+    "GITHUB_API_URL",
+    "https://api.github.com",
+).rstrip("/")
+GITHUB_API_VERSION = os.getenv(
+    "GITHUB_API_VERSION",
+    "2026-03-10",
+)
+GITHUB_API_TIMEOUT_SECONDS = float(
+    os.getenv("GITHUB_API_TIMEOUT_SECONDS", "15")
+)
+GITHUB_INSTALL_STATE_TTL_SECONDS = int(
+    os.getenv("GITHUB_INSTALL_STATE_TTL_SECONDS", "600")
+)
+
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -57,7 +167,6 @@ INSTALLED_APPS = [
     'auth_app',
     'api_app',
     "corsheaders",
-
 ]
 
 MIDDLEWARE = [
@@ -107,6 +216,7 @@ DATABASES = {
     )
 }
 
+
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
 
@@ -142,6 +252,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

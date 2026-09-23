@@ -46,22 +46,32 @@ inputs:
 outputs:
   comparison-id:
     description: Created comparison ID.
+    value: ${{ steps.submit.outputs.comparison-id }}
 
   job-id:
     description: Created analysis job ID.
+    value: ${{ steps.submit.outputs.job-id }}
 
   gate-status:
     description: Final CI gate status.
+    value: ${{ steps.poll.outputs.gate-status || steps.submit.outputs.gate-status }}
 
   reason-code:
     description: Final reason code.
+    value: ${{ steps.poll.outputs.reason-code || steps.submit.outputs.reason-code }}
 
   report-url:
     description: URL of the detailed comparison report.
+    value: ${{ steps.poll.outputs.report-url || steps.submit.outputs.report-url }}
 
 runs:
   using: composite
+
   steps:
+
+    # ============================================================
+    # 1. Validate GitHub PR context
+    # ============================================================
 
     - name: Validate GitHub PR context
       shell: bash
@@ -72,6 +82,11 @@ runs:
           echo "::error::API Compatibility Analyzer currently requires a pull_request event."
           exit 1
         fi
+
+
+    # ============================================================
+    # 2. Prepare CI variables
+    # ============================================================
 
     - name: Prepare CI variables
       id: prepare
@@ -88,23 +103,63 @@ runs:
         BASE_SHA="$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
         HEAD_SHA="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
 
+        if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
+          echo "::error::Unable to determine pull request number."
+          exit 1
+        fi
+
+        if [[ -z "$REPOSITORY" || "$REPOSITORY" == "null" ]]; then
+          echo "::error::Unable to determine repository."
+          exit 1
+        fi
+
+        if [[ -z "$BASE_SHA" || "$BASE_SHA" == "null" ]]; then
+          echo "::error::Unable to determine base SHA."
+          exit 1
+        fi
+
+        if [[ -z "$HEAD_SHA" || "$HEAD_SHA" == "null" ]]; then
+          echo "::error::Unable to determine head SHA."
+          exit 1
+        fi
+
+        if [[ -z "$PROJECT_ID" ]]; then
+          echo "::error::API Analyzer project ID is empty."
+          exit 1
+        fi
+
+        if [[ -z "$API_BASE_URL" ]]; then
+          echo "::error::API Analyzer base URL is empty."
+          exit 1
+        fi
+
+        if [[ -z "$SPEC_PATH" ]]; then
+          echo "::error::OpenAPI specification path is empty."
+          exit 1
+        fi
+
         echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
         echo "REPOSITORY=$REPOSITORY" >> "$GITHUB_ENV"
         echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
         echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
 
-        echo "project-id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
-        echo "api-base-url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
-        echo "spec-path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
-
         echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
         echo "API_BASE_URL=$API_BASE_URL" >> "$GITHUB_ENV"
         echo "SPEC_PATH=$SPEC_PATH" >> "$GITHUB_ENV"
+
+        echo "project-id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+        echo "api-base-url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
+        echo "spec-path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
 
         echo "Repository: $REPOSITORY"
         echo "Pull request: #$PR_NUMBER"
         echo "Base SHA: $BASE_SHA"
         echo "Head SHA: $HEAD_SHA"
+
+
+    # ============================================================
+    # 3. Protect fork pull requests
+    # ============================================================
 
     - name: Protect fork pull requests
       shell: bash
@@ -116,9 +171,15 @@ runs:
         IS_FORK="$(jq -r '.pull_request.head.repo.fork' "$GITHUB_EVENT_PATH")"
 
         if [[ "$IS_FORK" == "true" && -z "$TOKEN" ]]; then
-          echo "::warning::Skipping API Analyzer upload because this is a fork pull request and the project token is unavailable."
-          exit 0
+          echo "::error::API Analyzer project token is unavailable for this fork pull request."
+          echo "::error::The workflow cannot securely submit the contract without project authentication."
+          exit 1
         fi
+
+
+    # ============================================================
+    # 4. Fetch base and head commits
+    # ============================================================
 
     - name: Fetch base and head commits
       shell: bash
@@ -135,6 +196,11 @@ runs:
           origin \
           "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/api-analyzer-pr-${PR_NUMBER}"
 
+
+    # ============================================================
+    # 5. Select baseline
+    # ============================================================
+
     - name: Select baseline
       id: baseline
       shell: bash
@@ -147,9 +213,11 @@ runs:
           merge-base)
             COMPARE_BASE_SHA="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
             ;;
+
           base)
             COMPARE_BASE_SHA="$BASE_SHA"
             ;;
+
           *)
             echo "::error::Unsupported baseline-mode: $BASELINE_MODE"
             echo "::error::Supported values: merge-base, base"
@@ -157,9 +225,19 @@ runs:
             ;;
         esac
 
+        if [[ -z "$COMPARE_BASE_SHA" ]]; then
+          echo "::error::Unable to determine comparison baseline."
+          exit 1
+        fi
+
         echo "COMPARE_BASE_SHA=$COMPARE_BASE_SHA" >> "$GITHUB_ENV"
 
         echo "Comparison baseline: $COMPARE_BASE_SHA"
+
+
+    # ============================================================
+    # 6. Create isolated worktrees
+    # ============================================================
 
     - name: Create temporary worktrees
       shell: bash
@@ -176,6 +254,11 @@ runs:
 
         echo "BASE_DIR=$BASE_DIR" >> "$GITHUB_ENV"
         echo "HEAD_DIR=$HEAD_DIR" >> "$GITHUB_ENV"
+
+
+    # ============================================================
+    # 7. Generate / locate base specification
+    # ============================================================
 
     - name: Generate or locate base specification
       shell: bash
@@ -199,6 +282,11 @@ runs:
 
         echo "BASE_SPEC_FILE=$BASE_DIR/$SPEC_PATH" >> "$GITHUB_ENV"
 
+
+    # ============================================================
+    # 8. Generate / locate head specification
+    # ============================================================
+
     - name: Generate or locate head specification
       shell: bash
       env:
@@ -221,6 +309,11 @@ runs:
 
         echo "HEAD_SPEC_FILE=$HEAD_DIR/$SPEC_PATH" >> "$GITHUB_ENV"
 
+
+    # ============================================================
+    # 9. Validate JSON specifications
+    # ============================================================
+
     - name: Validate JSON specifications
       shell: bash
       run: |
@@ -235,25 +328,41 @@ runs:
                 data = json.load(f)
 
             if not isinstance(data, dict):
-                raise SystemExit(f"OpenAPI specification must be a JSON object: {path}")
+                raise SystemExit(
+                    f"OpenAPI specification must be a JSON object: {path}"
+                )
 
             if "openapi" not in data:
-                raise SystemExit(f"Missing 'openapi' field: {path}")
+                raise SystemExit(
+                    f"Missing 'openapi' field: {path}"
+                )
 
             print(f"Validated: {path}")
         PY
+
+
+    # ============================================================
+    # 10. Build CI payload
+    # ============================================================
 
     - name: Build CI payload
       shell: bash
       run: |
         set -euo pipefail
 
-        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" > "$RUNNER_TEMP/api-analyzer-payload.json" <<'PY'
+        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" \
+          > "$RUNNER_TEMP/api-analyzer-payload.json" <<'PY'
         import json
         import os
         import sys
 
-        base_path, head_path = sys.argv[1], sys.argv[2]
+        if len(sys.argv) != 3:
+            raise SystemExit(
+                "Expected exactly two specification paths."
+            )
+
+        base_path = sys.argv[1]
+        head_path = sys.argv[2]
 
         with open(base_path, "r", encoding="utf-8") as f:
             base_spec = json.load(f)
@@ -294,6 +403,10 @@ runs:
         print(json.dumps(payload))
         PY
 
+    # ============================================================
+    # 11. Submit CI analysis
+    # ============================================================
+
     - name: Submit CI analysis
       id: submit
       shell: bash
@@ -320,23 +433,64 @@ runs:
 
         echo "HTTP status: $HTTP_CODE"
 
-        if [[ "$HTTP_CODE" != "202" ]]; then
+        if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "202" ]]; then
           echo "::error::API Analyzer submission failed with HTTP $HTTP_CODE"
           cat "$RESPONSE_FILE"
           exit 1
         fi
 
-        COMPARISON_ID="$(jq -r '.comparison_id' "$RESPONSE_FILE")"
-        JOB_ID="$(jq -r '.job_id' "$RESPONSE_FILE")"
+        COMPARISON_ID="$(jq -r '.comparison_id // empty' "$RESPONSE_FILE")"
+        JOB_ID="$(jq -r '.job_id // empty' "$RESPONSE_FILE")"
+        INITIAL_STATUS="$(jq -r '.status // empty' "$RESPONSE_FILE")"
+        INITIAL_GATE_STATUS="$(jq -r '.gate_status // empty' "$RESPONSE_FILE")"
+        INITIAL_REASON_CODE="$(jq -r '.reason_code // .execution_reason // empty' "$RESPONSE_FILE")"
+        INITIAL_REPORT_URL="$(jq -r '.report_url // empty' "$RESPONSE_FILE")"
+
+        if [[ -z "$COMPARISON_ID" ]]; then
+          echo "::error::API Analyzer response did not contain comparison_id."
+          cat "$RESPONSE_FILE"
+          exit 1
+        fi
 
         echo "COMPARISON_ID=$COMPARISON_ID" >> "$GITHUB_ENV"
         echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
 
+        echo "GATE_STATUS=$INITIAL_GATE_STATUS" >> "$GITHUB_ENV"
+        echo "REASON_CODE=$INITIAL_REASON_CODE" >> "$GITHUB_ENV"
+        echo "REPORT_URL=$INITIAL_REPORT_URL" >> "$GITHUB_ENV"
+
         echo "comparison-id=$COMPARISON_ID" >> "$GITHUB_OUTPUT"
         echo "job-id=$JOB_ID" >> "$GITHUB_OUTPUT"
+        echo "gate-status=$INITIAL_GATE_STATUS" >> "$GITHUB_OUTPUT"
+        echo "reason-code=$INITIAL_REASON_CODE" >> "$GITHUB_OUTPUT"
+        echo "report-url=$INITIAL_REPORT_URL" >> "$GITHUB_OUTPUT"
+
+        case "$INITIAL_STATUS" in
+          completed|failed|cancelled)
+            echo "ANALYSIS_TERMINAL=true" >> "$GITHUB_ENV"
+            echo "Analysis already reached terminal state: $INITIAL_STATUS"
+            ;;
+
+          queued|running|"")
+            echo "ANALYSIS_TERMINAL=false" >> "$GITHUB_ENV"
+            echo "Analysis is not terminal yet: ${INITIAL_STATUS:-unknown}"
+            ;;
+
+          *)
+            echo "::error::Unknown analyzer status: $INITIAL_STATUS"
+            cat "$RESPONSE_FILE"
+            exit 1
+            ;;
+        esac
+
+
+    # ============================================================
+    # 12. Poll only if analysis is not already terminal
+    # ============================================================
 
     - name: Poll analysis status
       id: poll
+      if: ${{ env.ANALYSIS_TERMINAL != 'true' }}
       shell: bash
       env:
         API_BASE_URL: ${{ inputs.api-base-url }}
@@ -391,6 +545,11 @@ runs:
           sleep "$POLL_INTERVAL"
         done
 
+
+    # ============================================================
+    # 13. Evaluate CI gate
+    # ============================================================
+
     - name: Evaluate CI gate
       shell: bash
       env:
@@ -398,9 +557,9 @@ runs:
       run: |
         set -euo pipefail
 
-        NORMALIZED_GATE="$(echo "$GATE_STATUS" | tr '[:upper:]' '[:lower:]')"
+        NORMALIZED_GATE="$(echo "${GATE_STATUS:-}" | tr '[:upper:]' '[:lower:]')"
 
-        echo "Final gate: $NORMALIZED_GATE"
+        echo "Final gate: ${NORMALIZED_GATE:-empty}"
         echo "Reason: ${REASON_CODE:-none}"
 
         if [[ -n "${REPORT_URL:-}" ]]; then
@@ -437,6 +596,11 @@ runs:
             exit 1
             ;;
         esac
+
+
+    # ============================================================
+    # 14. Cleanup worktrees
+    # ============================================================
 
     - name: Cleanup worktrees
       if: always()
