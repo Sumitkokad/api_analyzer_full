@@ -1,0 +1,89 @@
+API Analyzer
+│
+├── .github/
+│   ├── actions/
+│   │   └── api-compatibility/
+│   │       └── action.yml
+│   └── workflows/
+│       └── api-compatibility.yml
+│
+├── backend/
+│   ├── api_app/
+│   │   ├── contracts/
+│   │   │   ├── gate.py
+│   │   │   └── quality.py
+│   │   ├── management/
+│   │   │   └── commands/
+│   │   │       └── process_analysis_jobs.py
+│   │   ├── migrations/
+│   │   ├── tests/
+│   │   ├── api_diff.py
+│   │   ├── api_normalization.py
+│   │   ├── api_parser.py
+│   │   ├── api_pipeline.py
+│   │   ├── breaking_change_rules.py
+│   │   ├── ci_service.py
+│   │   ├── ci_status_views.py
+│   │   ├── ci_views.py
+│   │   ├── classification.py
+│   │   ├── document_loader.py
+│   │   ├── document_splitter.py
+│   │   ├── embeddings.py
+│   │   ├── execution_policy.py
+│   │   ├── impact_analysis.py
+│   │   ├── llm.py
+│   │   ├── models.py
+│   │   ├── multi_change_analysis.py
+│   │   ├── permissions.py
+│   │   ├── rag_pipeline.py
+│   │   ├── schemas.py
+│   │   ├── schema_diff.py
+│   │   ├── serializers.py
+│   │   ├── services.py
+│   │   ├── vector_store.py
+│   │   ├── views.py
+│   │   └── urls.py
+│   │
+│   ├── auth_app/
+│   ├── project/
+│   │   └── data/
+│   │       ├── old_api.yaml
+│   │       └── new_api.yaml
+│   ├── manage.py
+│   ├── requirements.txt
+│   └── db.sqlite3
+│
+├── docs/
+│   └── audit.md
+│
+├── frontend/
+│   ├── public/
+│   │   ├── videos/
+│   │   │   └── api-analyzer-tour.mp4
+│   │   └── icons.svg
+│   └── src/
+│       ├── assets/
+│       ├── App.jsx
+│       ├── App.css
+│       ├── index.css
+│       └── main.jsx
+│
+├── openapi.json
+├── .gitignore
+└── project_structure.txt
+
+
+
+
+
+
+'''
+
+Get-ChildItem -Recurse -Force |
+>> Where-Object {
+>>     $_.FullName -notmatch '\\(node_modules|\.git|venv|\.venv|__pycache__|dist|build|\.chroma)(\\|$)'
+>> } |
+>> ForEach-Object {
+>>     $_.FullName.Substring((Get-Location).Path.Length + 1)
+>> } |
+>> Set-Content project_structure.txt'''
