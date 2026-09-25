@@ -1931,15 +1931,36 @@ jobs:
   })
 
   useEffect(() => {
-    if (!activeRunExists || !onRefresh) return undefined
+    if (!onRefresh) return undefined
+
+    // Keep the GitHub CI tracker live even when the page was opened
+    // before GitHub Actions created a comparison. Previously polling
+    // started only after an active run was already present, so a page
+    // showing 0 runs could remain stale forever.
+    const refresh = () => onRefresh()
+
+    refresh()
 
     const timer = window.setInterval(
-      () => onRefresh(),
+      refresh,
       10000,
     )
 
-    return () => window.clearInterval(timer)
-  }, [activeRunExists, onRefresh])
+    const handleFocus = () => refresh()
+
+    const handleVisibility = () => {
+      if (!document.hidden) refresh()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [onRefresh])
 
   const connectGithub = async () => {
     if (!projectId) {
