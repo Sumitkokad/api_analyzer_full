@@ -283,6 +283,21 @@ function yamlSingleQuote(value) {
   return `'${String(value || '').replace(/\r?\n/g, ' ').replace(/'/g, "''")}'`
 }
 
+function defaultGithubAnalyzerBaseUrl() {
+  const configured = String(configuredApiBase || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/i, '')
+
+  if (configured) return configured
+
+  if (!isLocalFrontend) {
+    return 'https://api-analyzer-backend.onrender.com'
+  }
+
+  return ''
+}
+
 export default function App() {
   const [session, setSession] = useState(readSession)
   const [route, setRoute] = useState(() => window.location.hash.replace('#/', '') || 'dashboard')
@@ -869,7 +884,6 @@ export default function App() {
             onOpenCompare={() => { window.location.hash = '#/compare' }}
             onSelectComparison={(comp) => {
               setActiveComparison(comp)
-              window.location.hash = '#/dashboard'
             }}
             onRefresh={refreshComparisons}
             apiFetch={apiFetch}
@@ -1169,8 +1183,7 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
 
-  const summary = comparison?.summary || {}
-  const changes = comparison?.changes || []
+  const changes = Array.isArray(comparison?.changes) ? comparison.changes : []
   const counts = useMemo(() => getComparisonCounts(comparison), [comparison])
   const gateStatus = getGateStatus(comparison)
 
@@ -1202,13 +1215,29 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
     })
   }, [changes, filter, search])
 
+  const noSemanticChanges =
+    Boolean(comparison) &&
+    !loading &&
+    changes.length === 0 &&
+    counts.total === 0
+
+  const filtersHideAll =
+    Boolean(comparison) &&
+    !loading &&
+    changes.length > 0 &&
+    filteredChanges.length === 0
+
   return (
     <div className="dashboard-layout">
       <div className="metrics-grid">
         <Metric
           label="Total Contract Changes"
           value={counts.total}
-          sub={`${counts.breaking} breaking · ${counts.potentiallyBreaking} potential · ${counts.nonBreaking} compatible`}
+          sub={
+            counts.total === 0
+              ? 'No semantic changes detected'
+              : `${counts.breaking} breaking · ${counts.potentiallyBreaking} potential · ${counts.nonBreaking} compatible`
+          }
           icon={IconLayers}
         />
         <Metric
@@ -1222,14 +1251,30 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           label="Compatible Updates"
           value={counts.nonBreaking}
           tone="good"
-          sub={counts.potentiallyBreaking ? `${counts.potentiallyBreaking} potential risk item${counts.potentiallyBreaking === 1 ? '' : 's'}` : 'No potential-risk items'}
+          sub={
+            counts.potentiallyBreaking
+              ? `${counts.potentiallyBreaking} potential risk item${counts.potentiallyBreaking === 1 ? '' : 's'}`
+              : 'No potential-risk items'
+          }
           icon={IconShieldCheck}
         />
         <Metric
           label="CI Gate"
           value={comparison ? gateStatus : 'IDLE'}
-          tone={gateStatus === 'FAIL' || gateStatus === 'ERROR' ? 'danger' : gateStatus === 'WARN' ? 'warn' : gateStatus === 'PASS' ? 'good' : undefined}
-          sub={comparison ? (comparison.gate_reason_code || `Comparison #${comparison.id}`) : 'No active comparison'}
+          tone={
+            gateStatus === 'FAIL' || gateStatus === 'ERROR'
+              ? 'danger'
+              : gateStatus === 'WARN'
+                ? 'warn'
+                : gateStatus === 'PASS'
+                  ? 'good'
+                  : undefined
+          }
+          sub={
+            comparison
+              ? comparison.gate_reason_code || `Comparison #${comparison.id}`
+              : 'No active comparison'
+          }
           icon={IconCpu}
         />
       </div>
@@ -1247,14 +1292,20 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           <div>
             <span>Revision pair</span>
             <strong>
-              {comparison.base_sha ? String(comparison.base_sha).slice(0, 10) : 'base'}
+              {comparison.base_sha
+                ? String(comparison.base_sha).slice(0, 10)
+                : 'base'}
               {' → '}
-              {comparison.head_sha ? String(comparison.head_sha).slice(0, 10) : 'head'}
+              {comparison.head_sha
+                ? String(comparison.head_sha).slice(0, 10)
+                : 'head'}
             </strong>
           </div>
           <div>
             <span>Decision</span>
-            <span className={`badge ${gateBadgeClass(gateStatus)}`}>{gateStatus}</span>
+            <span className={`badge ${gateBadgeClass(gateStatus)}`}>
+              {gateStatus}
+            </span>
           </div>
         </div>
       )}
@@ -1266,7 +1317,11 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
               <h2>Pipeline Workflow Guide</h2>
               <p>Step-by-step lifecycle of an API compatibility audit.</p>
             </div>
-            <button type="button" className="text-action-btn" onClick={onOpenVideo}>
+            <button
+              type="button"
+              className="text-action-btn"
+              onClick={onOpenVideo}
+            >
               <IconPlayCircle /> Open Product Demo
             </button>
           </div>
@@ -1284,7 +1339,11 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
                   : 'Run your first comparison to view classified diffs.'}
               </p>
             </div>
-            <button type="button" className="primary small-btn" onClick={onOpenCompare}>
+            <button
+              type="button"
+              className="primary small-btn"
+              onClick={onOpenCompare}
+            >
               <IconPlus /> Run New
             </button>
           </div>
@@ -1297,48 +1356,109 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           )}
 
           {!comparison && !loading && (
-            <EmptyState onOpenCompare={onOpenCompare} onOpenVideo={onOpenVideo} />
+            <EmptyState
+              onOpenCompare={onOpenCompare}
+              onOpenVideo={onOpenVideo}
+            />
           )}
 
           {comparison && !loading && (
             <div className="changes-browser">
               {counts.unknown > 0 && (
                 <div className="notice notice-warning classification-warning">
-                  <span className="notice-icon"><IconAlertCircle /></span>
+                  <span className="notice-icon">
+                    <IconAlertCircle />
+                  </span>
                   <span className="notice-body">
-                    {counts.unknown} change{counts.unknown === 1 ? '' : 's'} could not be mapped to a known compatibility class. Treating these as unclassified instead of silently calling them safe.
+                    {counts.unknown} change
+                    {counts.unknown === 1 ? '' : 's'} could not be mapped to a
+                    known compatibility class. Treating these as unclassified
+                    instead of silently calling them safe.
                   </span>
                 </div>
               )}
 
-              <div className="filter-toolbar">
-                <div className="filter-tabs">
-                  <button type="button" className={`filter-tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                    All ({changes.length})
-                  </button>
-                  <button type="button" className={`filter-tab tab-breaking ${filter === 'breaking' ? 'active' : ''}`} onClick={() => setFilter('breaking')}>
-                    Breaking ({counts.breaking})
-                  </button>
-                  <button type="button" className={`filter-tab tab-potential ${filter === 'potentially-breaking' ? 'active' : ''}`} onClick={() => setFilter('potentially-breaking')}>
-                    Potential ({counts.potentiallyBreaking})
-                  </button>
-                  <button type="button" className={`filter-tab tab-safe ${filter === 'non-breaking' ? 'active' : ''}`} onClick={() => setFilter('non-breaking')}>
-                    Compatible ({counts.nonBreaking})
-                  </button>
+              {noSemanticChanges ? (
+                <div className="no-contract-changes">
+                  <div className="no-contract-changes-icon">
+                    <IconShieldCheck />
+                  </div>
+                  <span className="badge badge-safe">NO BREAKING CHANGES</span>
+                  <h3>No semantic contract changes detected</h3>
+                  <p>
+                    The base and head OpenAPI specifications contain no
+                    structural API differences for this comparison. This is a
+                    valid successful CI result, not an empty or failed audit.
+                  </p>
+                  {comparison.gate_reason_code && (
+                    <code>{comparison.gate_reason_code}</code>
+                  )}
                 </div>
+              ) : (
+                <>
+                  <div className="filter-toolbar">
+                    <div className="filter-tabs">
+                      <button
+                        type="button"
+                        className={`filter-tab ${filter === 'all' ? 'active' : ''}`}
+                        onClick={() => setFilter('all')}
+                      >
+                        All ({changes.length})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-breaking ${
+                          filter === 'breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('breaking')}
+                      >
+                        Breaking ({counts.breaking})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-potential ${
+                          filter === 'potentially-breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('potentially-breaking')}
+                      >
+                        Potential ({counts.potentiallyBreaking})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-safe ${
+                          filter === 'non-breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('non-breaking')}
+                      >
+                        Compatible ({counts.nonBreaking})
+                      </button>
+                    </div>
 
-                <div className="filter-search-box">
-                  <IconSearch />
-                  <input
-                    type="search"
-                    placeholder="Search endpoint, field or rule…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
-              </div>
+                    <div className="filter-search-box">
+                      <IconSearch />
+                      <input
+                        type="search"
+                        placeholder="Search endpoint, field or rule…"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                      />
+                    </div>
+                  </div>
 
-              <ChangeList changes={filteredChanges} />
+                  {filtersHideAll ? (
+                    <div className="filtered-empty-state">
+                      <IconSearch />
+                      <strong>No changes match this filter</strong>
+                      <p>
+                        Try the All tab or clear the search field to see the
+                        stored semantic changes.
+                      </p>
+                    </div>
+                  ) : (
+                    <ChangeList changes={filteredChanges} />
+                  )}
+                </>
+              )}
             </div>
           )}
         </section>
@@ -1429,12 +1549,12 @@ function EmptyState({ onOpenCompare, onOpenVideo }) {
   )
 }
 
-function ChangeList({ changes }) {
+function ChangeList({ changes, emptyMessage = 'No changes to display.' }) {
   if (!changes.length) {
     return (
       <div className="empty-changes">
         <IconShieldCheck />
-        <p>No changes match the selected filter criteria.</p>
+        <p>{emptyMessage}</p>
       </div>
     )
   }
@@ -1449,30 +1569,70 @@ function ChangeList({ changes }) {
         const flags = Array.isArray(change.flags) ? change.flags : []
 
         return (
-          <article key={change.id || change.stable_hash || index} className={`change-item ${itemClass}`}>
+          <article
+            key={change.id || change.stable_hash || index}
+            className={`change-item ${itemClass}`}
+          >
             <div className="change-heading">
               <div className="change-title-group">
-                <span className="change-index">#{String(index + 1).padStart(2, '0')}</span>
-                <span className="change-endpoint">{change.endpoint || '/'}</span>
-                <span className={`badge ${badgeClass}`}>{compatibilityLabel(classification)}</span>
+                <span className="change-index">
+                  #{String(index + 1).padStart(2, '0')}
+                </span>
+                <span className="change-endpoint">
+                  {change.endpoint || '/'}
+                </span>
+                <span className={`badge ${badgeClass}`}>
+                  {compatibilityLabel(classification)}
+                </span>
               </div>
-              <span className="change-category">{change.change_type || 'Contract Diff'}</span>
+              <span className="change-category">
+                {change.change_type || 'Contract Diff'}
+              </span>
             </div>
 
             <div className="change-meta">
-              <strong>Target:</strong> {change.parameter || change.schema_path || 'Endpoint root definition'}
+              <strong>Target:</strong>{' '}
+              {change.parameter ||
+                change.schema_path ||
+                'Endpoint root definition'}
             </div>
 
             <div className="change-signals">
-              {change.method && <span className="change-signal">{String(change.method).toUpperCase()}</span>}
-              {change.direction && change.direction !== 'unknown' && <span className="change-signal">{change.direction}</span>}
-              {change.relation && <span className="change-signal">relation: {change.relation}</span>}
-              {change.rule_id && <span className="change-signal change-signal-mono">rule: {change.rule_id}</span>}
-              {change.severity && <span className="change-signal">severity: {change.severity}</span>}
-              {flags.map((flag) => <span key={flag} className="change-signal change-signal-flag">{flag}</span>)}
+              {change.method && (
+                <span className="change-signal">
+                  {String(change.method).toUpperCase()}
+                </span>
+              )}
+              {change.direction && change.direction !== 'unknown' && (
+                <span className="change-signal">{change.direction}</span>
+              )}
+              {change.relation && (
+                <span className="change-signal">
+                  relation: {change.relation}
+                </span>
+              )}
+              {change.rule_id && (
+                <span className="change-signal change-signal-mono">
+                  rule: {change.rule_id}
+                </span>
+              )}
+              {change.severity && (
+                <span className="change-signal">
+                  severity: {change.severity}
+                </span>
+              )}
+              {flags.map((flag) => (
+                <span
+                  key={flag}
+                  className="change-signal change-signal-flag"
+                >
+                  {flag}
+                </span>
+              ))}
             </div>
 
-            {(change.old_value !== undefined || change.new_value !== undefined) && (
+            {(change.old_value !== undefined ||
+              change.new_value !== undefined) && (
               <div className="diff-block">
                 {change.old_value !== undefined && (
                   <div className="diff-row removed">
@@ -1490,21 +1650,31 @@ function ChangeList({ changes }) {
             )}
 
             {change.llm_analysis && (
-              <ImpactBox analysis={change.llm_analysis} classification={classification} />
+              <ImpactBox
+                analysis={change.llm_analysis}
+                classification={classification}
+              />
             )}
 
             {evidence.length > 0 && (
               <details className="evidence-toggle">
-                <summary>Supporting Evidence ({evidence.length})</summary>
+                <summary>
+                  Supporting Evidence ({evidence.length})
+                </summary>
                 <div className="evidence-content">
                   {evidence.map((item, idx) => (
                     <div key={idx} className="evidence-item">
                       <div className="evidence-item-meta">
-                        <span>{item.source_type || item.source || 'spec'}</span>
+                        <span>
+                          {item.source_type || item.source || 'spec'}
+                        </span>
                         <span>{item.retrieval || 'exact'}</span>
                         {item.location && <span>{item.location}</span>}
                       </div>
-                      <pre>{item.excerpt || JSON.stringify(item, null, 2)}</pre>
+                      <pre>
+                        {item.excerpt ||
+                          JSON.stringify(item, null, 2)}
+                      </pre>
                     </div>
                   ))}
                 </div>
@@ -1601,7 +1771,14 @@ function comparisonSummaryNote(comparison) {
   return gateDescription(comparison)
 }
 
-function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison, onRefresh, apiFetch }) {
+function GitHubCIPage({
+  projects,
+  comparisons,
+  onOpenCompare,
+  onSelectComparison,
+  onRefresh,
+  apiFetch,
+}) {
   const [projectId, setProjectId] = useState(() => {
     try {
       return (
@@ -1613,8 +1790,11 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
       return projects[0]?.id || ''
     }
   })
+
   const [repository, setRepository] = useState('')
-  const [analyzerBaseUrl, setAnalyzerBaseUrl] = useState('')
+  const [analyzerBaseUrl, setAnalyzerBaseUrl] = useState(
+    defaultGithubAnalyzerBaseUrl(),
+  )
   const [specPath, setSpecPath] = useState('openapi.json')
   const [generateCommand, setGenerateCommand] = useState('')
   const [baselineMode, setBaselineMode] = useState('merge-base')
@@ -1633,7 +1813,6 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
   const [repositoryConnecting, setRepositoryConnecting] = useState(false)
   const [githubError, setGithubError] = useState('')
 
-  const [copiedWorkflow, setCopiedWorkflow] = useState(false)
   const [ciToken, setCiToken] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
   const [tokenLoading, setTokenLoading] = useState(false)
@@ -1641,7 +1820,8 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
   const [tokenError, setTokenError] = useState('')
   const [validation, setValidation] = useState(null)
   const [validationLoading, setValidationLoading] = useState(false)
-  const [loadedConfigProjectId, setLoadedConfigProjectId] = useState('')
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [selectedRunId, setSelectedRunId] = useState('')
 
   useEffect(() => {
     try {
@@ -1652,102 +1832,105 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
   }, [])
 
   useEffect(() => {
-    if (!projectId && projects.length > 0) setProjectId(projects[0].id)
+    if (!projectId && projects.length > 0) {
+      setProjectId(projects[0].id)
+    }
   }, [projects, projectId])
 
-  const loadGithubState = useCallback(async (selectedProjectId) => {
-    if (!selectedProjectId) {
-      setGithubConnection({
-        connected: false,
-        installation_connected: false,
-        installation_id: '',
-        repository_full_name: '',
-        metadata: {},
-      })
-      setGithubRepositories([])
-      setGithubError('')
-      return
-    }
-
-    setGithubLoading(true)
-    setGithubError('')
-
-    try {
-      const connection = await apiFetch(
-        `/github/connection/?project_id=${selectedProjectId}`,
-      )
-
-      const normalizedConnection = {
-        connected: Boolean(connection?.connected),
-        installation_connected: Boolean(connection?.installation_connected),
-        installation_id: String(connection?.installation_id || ''),
-        repository_full_name: String(connection?.repository_full_name || ''),
-        metadata: connection?.metadata || {},
+  const loadGithubState = useCallback(
+    async (selectedProjectId) => {
+      if (!selectedProjectId) {
+        setGithubConnection({
+          connected: false,
+          installation_connected: false,
+          installation_id: '',
+          repository_full_name: '',
+          metadata: {},
+        })
+        setGithubRepositories([])
+        setGithubError('')
+        return
       }
 
-      setGithubConnection(normalizedConnection)
+      setGithubLoading(true)
+      setGithubError('')
 
-      if (normalizedConnection.installation_connected) {
-        const repositoryData = await apiFetch(
-          `/github/repositories/?project_id=${selectedProjectId}`,
+      try {
+        const connection = await apiFetch(
+          `/github/connection/?project_id=${selectedProjectId}`,
         )
 
-        const repositories = Array.isArray(repositoryData?.repositories)
-          ? repositoryData.repositories
-          : []
-
-        setGithubRepositories(repositories)
-
-        if (normalizedConnection.repository_full_name) {
-          setRepository(normalizedConnection.repository_full_name)
-        } else if (
-          repository &&
-          !repositories.some(
-            (item) =>
-              String(item.full_name || '').toLowerCase() ===
-              String(repository).toLowerCase(),
-          )
-        ) {
-          // Preserve a legacy/manual repository draft until the user
-          // explicitly chooses an App-connected repository.
+        const normalizedConnection = {
+          connected: Boolean(connection?.connected),
+          installation_connected: Boolean(
+            connection?.installation_connected,
+          ),
+          installation_id: String(connection?.installation_id || ''),
+          repository_full_name: String(
+            connection?.repository_full_name || '',
+          ),
+          metadata: connection?.metadata || {},
         }
-      } else {
+
+        setGithubConnection(normalizedConnection)
+
+        if (normalizedConnection.installation_connected) {
+          const repositoryData = await apiFetch(
+            `/github/repositories/?project_id=${selectedProjectId}`,
+          )
+
+          const repositories = Array.isArray(
+            repositoryData?.repositories,
+          )
+            ? repositoryData.repositories
+            : []
+
+          setGithubRepositories(repositories)
+
+          if (normalizedConnection.repository_full_name) {
+            setRepository(
+              normalizedConnection.repository_full_name,
+            )
+          }
+        } else {
+          setGithubRepositories([])
+          setRepository('')
+        }
+      } catch (error) {
         setGithubRepositories([])
+        setGithubError(
+          error.message ||
+            'Unable to load GitHub connection status.',
+        )
+      } finally {
+        setGithubLoading(false)
       }
-    } catch (error) {
-      setGithubRepositories([])
-      setGithubError(
-        error.message ||
-        'Unable to load GitHub connection status.',
-      )
-    } finally {
-      setGithubLoading(false)
-    }
-  }, [apiFetch])
+    },
+    [apiFetch],
+  )
 
   useEffect(() => {
-    if (!projectId) {
-      setLoadedConfigProjectId('')
-      return undefined
-    }
+    if (!projectId) return undefined
+
+    let cancelled = false
 
     const saved = readGithubConfig(projectId)
 
     setRepository(saved.repository || '')
-    setAnalyzerBaseUrl(saved.analyzerBaseUrl || '')
+    setAnalyzerBaseUrl(
+      saved.analyzerBaseUrl || defaultGithubAnalyzerBaseUrl(),
+    )
     setSpecPath(saved.specPath || 'openapi.json')
     setGenerateCommand(saved.generateCommand || '')
     setBaselineMode(saved.baselineMode || 'merge-base')
     setFailOnError(saved.failOnError !== false)
+
     setCiToken('')
     setTokenVisible(false)
     setTokenCopied(false)
     setTokenError('')
     setValidation(null)
-    setGithubError('')
-    setLoadedConfigProjectId(String(projectId))
-
-    let cancelled = false
+    setSelectedRunId('')
 
     const load = async () => {
       if (cancelled) return
@@ -1762,7 +1945,7 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
   }, [projectId, loadGithubState])
 
   useEffect(() => {
-    if (!projectId || String(projectId) !== loadedConfigProjectId) return
+    if (!projectId) return
 
     writeGithubConfig(projectId, {
       repository,
@@ -1774,7 +1957,6 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
     })
   }, [
     projectId,
-    loadedConfigProjectId,
     repository,
     analyzerBaseUrl,
     specPath,
@@ -1788,7 +1970,9 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
   )
 
   const repositoryInfo = useMemo(() => {
-    const value = repository.trim().replace(/\.git$/i, '')
+    const value = repository
+      .trim()
+      .replace(/\.git$/i, '')
 
     if (/^https?:\/\/github\.com\//i.test(value)) {
       const path = value
@@ -1810,11 +1994,7 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
       .replace(/\/+$/, '')
     const [owner, name] = shortName.split('/')
 
-    if (
-      owner &&
-      name &&
-      !shortName.includes('://')
-    ) {
+    if (owner && name && !shortName.includes('://')) {
       return {
         owner,
         name,
@@ -1835,72 +2015,15 @@ function GitHubCIPage({ projects, comparisons, onOpenCompare, onSelectComparison
     [githubRepositories, repository],
   )
 
-  const workflowYaml = useMemo(() => {
-    const safeRepo = repositoryInfo?.fullName || ''
-    const safeBaseUrl = analyzerBaseUrl
-      .trim()
-      .replace(/\/+$/, '')
-      .replace(/\/api$/i, '')
-    const safeSpecPath = specPath.trim() || 'openapi.json'
-    const safeGenerateCommand = generateCommand.trim()
-
-    return `name: API Compatibility
-
-on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-
-permissions:
-  contents: read
-
-jobs:
-  api-compatibility:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run API Compatibility Analyzer
-        uses: ${GITHUB_ACTION_REPOSITORY}/.github/actions/api-compatibility@${GITHUB_ACTION_REF}
-        with:
-          api-base-url: ${yamlSingleQuote(safeBaseUrl || 'https://YOUR-ANALYZER-URL')}
-          project-id: \${{ secrets.API_ANALYZER_PROJECT_ID }}
-          token: \${{ secrets.API_ANALYZER_TOKEN }}
-          spec-path: ${yamlSingleQuote(safeSpecPath)}
-          generate-command: ${yamlSingleQuote(safeGenerateCommand)}
-          baseline-mode: ${yamlSingleQuote(baselineMode)}
-          fail-on-error: ${yamlSingleQuote(failOnError ? 'true' : 'false')}
-          poll-timeout-seconds: '600'
-          poll-interval-seconds: '5'
-
-# Customer repository: ${safeRepo || 'owner/repository'}
-# For fork PRs, do not expose write-capable secrets to the untrusted pull_request job.
-# Use a trusted workflow_run/artifact pattern when fork support is required.
-`
-  }, [
-    repositoryInfo,
-    analyzerBaseUrl,
-    specPath,
-    generateCommand,
-    baselineMode,
-    failOnError,
-  ])
-
   const connectedRuns = useMemo(() => {
-    const projectMatches = comparisons.filter(
-      (comparison) =>
-        String(comparison.project) === String(projectId),
-    )
+    const normalizedRepo =
+      repositoryInfo?.fullName?.toLowerCase()
 
-    const normalizedRepo = repositoryInfo?.fullName?.toLowerCase()
-
-    return projectMatches
+    return comparisons
+      .filter(
+        (comparison) =>
+          String(comparison.project) === String(projectId),
+      )
       .filter((comparison) => {
         if (!normalizedRepo) return true
 
@@ -1922,6 +2045,53 @@ jobs:
       })
   }, [comparisons, projectId, repositoryInfo])
 
+  const selectedRun = useMemo(
+    () =>
+      connectedRuns.find(
+        (comparison) =>
+          String(comparison.id) === String(selectedRunId),
+      ) || null,
+    [connectedRuns, selectedRunId],
+  )
+
+  useEffect(() => {
+    if (
+      selectedRunId &&
+      !connectedRuns.some(
+        (comparison) =>
+          String(comparison.id) === String(selectedRunId),
+      )
+    ) {
+      setSelectedRunId('')
+    }
+  }, [connectedRuns, selectedRunId])
+
+  useEffect(() => {
+    if (!onRefresh) return undefined
+
+    const refresh = () => onRefresh()
+    refresh()
+
+    const timer = window.setInterval(refresh, 10000)
+
+    const handleFocus = () => refresh()
+    const handleVisibility = () => {
+      if (!document.hidden) refresh()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener(
+        'visibilitychange',
+        handleVisibility,
+      )
+    }
+  }, [onRefresh])
+
   const activeRunExists = connectedRuns.some((comparison) => {
     const status = String(
       comparison.status || '',
@@ -1930,16 +2100,113 @@ jobs:
     return status === 'queued' || status === 'running'
   })
 
-  useEffect(() => {
-    if (!activeRunExists || !onRefresh) return undefined
+  const analyzerUrlValid = /^https:\/\/[^\s]+$/i.test(
+    analyzerBaseUrl.trim(),
+  )
 
-    const timer = window.setInterval(
-      () => onRefresh(),
-      10000,
+  const localAnalyzerUrl =
+    /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)([:/]|$)/i.test(
+      analyzerBaseUrl.trim(),
     )
 
-    return () => window.clearInterval(timer)
-  }, [activeRunExists, onRefresh])
+  const repositoryValid =
+    Boolean(repositoryInfo) &&
+    githubConnection.connected &&
+    Boolean(
+      githubConnection.repository_full_name &&
+        String(githubConnection.repository_full_name).toLowerCase() ===
+          String(repositoryInfo?.fullName || '').toLowerCase(),
+    )
+
+  const specValid = Boolean(specPath.trim())
+  const baselineValid = ['merge-base', 'base'].includes(
+    baselineMode,
+  )
+
+  const integrationConnected =
+    githubConnection.installation_connected && githubConnection.connected
+
+  const ciActive = connectedRuns.length > 0
+
+  const onboardingStep =
+    !githubConnection.installation_connected
+      ? 1
+      : !githubConnection.connected
+        ? 2
+        : !ciActive && !ciToken
+          ? 3
+          : 4
+
+  const validateAnalyzerSetup = async () => {
+    setValidationLoading(true)
+    setValidation(null)
+
+    try {
+      if (!projectId) {
+        throw new Error(
+          'Select an analyzer project before continuing.',
+        )
+      }
+
+      if (!githubConnection.installation_connected) {
+        throw new Error(
+          'Connect the API Analyzer GitHub App first.',
+        )
+      }
+
+      if (!githubConnection.connected) {
+        throw new Error(
+          'Select and connect a GitHub repository first.',
+        )
+      }
+
+      if (!repositoryInfo) {
+        throw new Error(
+          'The connected GitHub repository is invalid.',
+        )
+      }
+
+      if (!analyzerUrlValid || localAnalyzerUrl) {
+        throw new Error(
+          'The GitHub Action needs a public HTTPS analyzer endpoint.',
+        )
+      }
+
+      if (!specValid) {
+        throw new Error(
+          'Tell API Analyzer where the OpenAPI contract lives.',
+        )
+      }
+
+      if (!baselineValid) {
+        throw new Error(
+          'Choose a valid baseline strategy.',
+        )
+      }
+
+      const project = await apiFetch(
+        `/projects/${projectId}/`,
+      )
+
+      setValidation({
+        ok: true,
+        message:
+          `Setup checks passed for ${project?.name || `Project #${projectId}`}. ` +
+          (ciActive
+            ? 'A CI comparison has already been received for this repository.'
+            : 'One-time GitHub Actions configuration is still required.'),
+      })
+    } catch (error) {
+      setValidation({
+        ok: false,
+        message:
+          error.message ||
+          'Unable to validate the GitHub setup.',
+      })
+    } finally {
+      setValidationLoading(false)
+    }
+  }
 
   const connectGithub = async () => {
     if (!projectId) {
@@ -1967,7 +2234,7 @@ jobs:
     } catch (error) {
       setGithubError(
         error.message ||
-        'Unable to start the GitHub App installation.',
+          'Unable to start the GitHub App installation.',
       )
       setGithubConnecting(false)
     }
@@ -1978,16 +2245,9 @@ jobs:
   }
 
   const connectRepository = async () => {
-    if (!projectId) {
+    if (!projectId || !repositoryInfo) {
       setGithubError(
-        'Select an analyzer project first.',
-      )
-      return
-    }
-
-    if (!repositoryInfo) {
-      setGithubError(
-        'Select a repository from the GitHub repository list.',
+        'Select a repository from the GitHub App list first.',
       )
       return
     }
@@ -2002,7 +2262,8 @@ jobs:
           method: 'POST',
           body: JSON.stringify({
             project_id: projectId,
-            repository_full_name: repositoryInfo.fullName,
+            repository_full_name:
+              repositoryInfo.fullName,
           }),
         },
       )
@@ -2012,6 +2273,7 @@ jobs:
         repositoryInfo.fullName
 
       setRepository(connectedRepository)
+
       setGithubConnection((current) => ({
         ...current,
         connected: true,
@@ -2021,12 +2283,14 @@ jobs:
 
       setValidation({
         ok: true,
-        message: `${connectedRepository} is connected to Project #${projectId}.`,
+        message:
+          `${connectedRepository} is now connected. ` +
+          'Continue with the one-time CI setup below.',
       })
     } catch (error) {
       setGithubError(
         error.message ||
-        'Unable to connect the selected GitHub repository.',
+          'Unable to connect the selected GitHub repository.',
       )
     } finally {
       setRepositoryConnecting(false)
@@ -2059,178 +2323,16 @@ jobs:
 
       setValidation({
         ok: true,
-        message: 'The GitHub repository was disconnected. The App installation remains available.',
+        message:
+          'The repository was disconnected. The GitHub App installation remains available.',
       })
     } catch (error) {
       setGithubError(
         error.message ||
-        'Unable to disconnect the GitHub repository.',
+          'Unable to disconnect the GitHub repository.',
       )
     } finally {
       setRepositoryConnecting(false)
-    }
-  }
-
-  const analyzerUrlValid = /^https:\/\/[^\s]+$/i.test(
-    analyzerBaseUrl.trim(),
-  )
-
-  const localAnalyzerUrl =
-    /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)([:/]|$)/i.test(
-      analyzerBaseUrl.trim(),
-    )
-
-  const repositoryValid = Boolean(repositoryInfo)
-  const specValid = Boolean(specPath.trim())
-  const projectValid = Boolean(projectId)
-
-  const setupChecks = [
-    {
-      label: 'Analyzer project selected',
-      ok: projectValid,
-      detail: projectValid
-        ? `${selectedProject?.name || `Project #${projectId}`}`
-        : 'Choose the analyzer project that owns this CI submission.',
-    },
-    {
-      label: 'GitHub App connected',
-      ok: githubConnection.installation_connected,
-      detail: githubConnection.installation_connected
-        ? `Installation ${githubConnection.installation_id || 'active'}`
-        : 'Connect the API Analyzer GitHub App to access repositories.',
-    },
-    {
-      label: 'GitHub repository connected',
-      ok: githubConnection.connected && repositoryValid,
-      detail: githubConnection.connected && repositoryInfo
-        ? repositoryInfo.fullName
-        : 'Select a repository from the installed GitHub App.',
-    },
-    {
-      label: 'Analyzer URL configured',
-      ok: analyzerUrlValid && !localAnalyzerUrl,
-      detail: !analyzerBaseUrl.trim()
-        ? 'Required by GitHub-hosted runners.'
-        : localAnalyzerUrl
-          ? 'localhost is not reachable from GitHub-hosted runners.'
-          : analyzerUrlValid
-            ? 'Public HTTPS endpoint configured.'
-            : 'Enter a valid HTTPS analyzer URL.',
-    },
-    {
-      label: 'OpenAPI contract source configured',
-      ok: specValid,
-      detail: specValid
-        ? specPath.trim()
-        : 'Provide the path used by the customer workflow.',
-    },
-    {
-      label: 'Baseline strategy selected',
-      ok: ['merge-base', 'base'].includes(baselineMode),
-      detail:
-        baselineMode === 'merge-base'
-          ? 'Common ancestor of PR base and head.'
-          : 'PR target-branch head SHA.',
-    },
-    {
-      label: 'Project CI token generated',
-      ok: Boolean(ciToken),
-      detail: ciToken
-        ? 'Token generated in this session; copy it to GitHub Actions Secrets.'
-        : 'Generate a token when you are ready to configure GitHub Secrets.',
-    },
-  ]
-
-  // Keep the existing manual GitHub Actions path usable. The GitHub App
-  // connection is the preferred onboarding path, but it is not required for
-  // the already-supported repository-side CI workflow.
-  const workflowConfigReady =
-    projectValid &&
-    repositoryValid &&
-    analyzerUrlValid &&
-    !localAnalyzerUrl &&
-    specValid &&
-    ['merge-base', 'base'].includes(baselineMode)
-
-  const setupReady =
-    workflowConfigReady &&
-    Boolean(ciToken)
-
-  const validateAnalyzerSetup = async () => {
-    setValidationLoading(true)
-
-    try {
-      if (!projectId) {
-        throw new Error(
-          'Select an analyzer project first.',
-        )
-      }
-
-      if (!githubConnection.connected) {
-        throw new Error(
-          'Connect a GitHub repository before validating CI setup.',
-        )
-      }
-
-      if (!repositoryInfo) {
-        throw new Error(
-          'The connected GitHub repository is invalid.',
-        )
-      }
-
-      if (
-        !analyzerUrlValid ||
-        localAnalyzerUrl
-      ) {
-        throw new Error(
-          'Use a publicly reachable HTTPS analyzer URL for GitHub Actions.',
-        )
-      }
-
-      if (!specPath.trim()) {
-        throw new Error(
-          'OpenAPI specification path cannot be empty.',
-        )
-      }
-
-      const project = await apiFetch(
-        `/projects/${projectId}/`,
-      )
-
-      setValidation({
-        ok: true,
-        message: `Analyzer project access confirmed for ${project?.name || `Project #${projectId}`} and GitHub repository ${repositoryInfo.fullName}.`,
-      })
-    } catch (error) {
-      setValidation({
-        ok: false,
-        message:
-          error.message ||
-          'Setup validation failed.',
-      })
-    } finally {
-      setValidationLoading(false)
-    }
-  }
-
-  const copyWorkflow = async () => {
-    try {
-      await navigator.clipboard.writeText(
-        workflowYaml,
-      )
-
-      setCopiedWorkflow(true)
-
-      window.setTimeout(
-        () => setCopiedWorkflow(false),
-        2000,
-      )
-    } catch (error) {
-      console.error(
-        'Could not copy GitHub workflow:',
-        error,
-      )
-      setCopiedWorkflow(false)
     }
   }
 
@@ -2269,33 +2371,34 @@ jobs:
     } catch (error) {
       setTokenError(
         error.message ||
-        'Failed to generate CI token.',
+          'Failed to generate the CI credential.',
       )
     } finally {
       setTokenLoading(false)
     }
   }
 
-  const copyCIToken = async () => {
+  const copyToken = async () => {
     if (!ciToken) return
 
     try {
-      await navigator.clipboard.writeText(
-        ciToken,
-      )
-
+      await navigator.clipboard.writeText(ciToken)
       setTokenCopied(true)
-
-      window.setTimeout(
-        () => setTokenCopied(false),
-        2000,
-      )
+      window.setTimeout(() => setTokenCopied(false), 1800)
     } catch (error) {
-      console.error(
-        'Could not copy CI token:',
-        error,
+      setTokenError(
+        'The token could not be copied. Use the browser copy controls instead.',
       )
-      setTokenCopied(false)
+    }
+  }
+
+  const copySecretNames = async () => {
+    try {
+      await navigator.clipboard.writeText(
+        'API_ANALYZER_BASE_URL\nAPI_ANALYZER_PROJECT_ID\nAPI_ANALYZER_TOKEN',
+      )
+    } catch {
+      // Clipboard is a convenience only.
     }
   }
 
@@ -2329,53 +2432,345 @@ jobs:
     )
   }
 
+  const safeBaseUrl =
+    analyzerBaseUrl
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\/api$/i, '') ||
+    defaultGithubAnalyzerBaseUrl()
+
+  const workflowYaml = useMemo(() => {
+    const safeRepo =
+      repositoryInfo?.fullName || 'owner/repository'
+    const safeSpecPath =
+      specPath.trim() || 'openapi.json'
+    const safeGenerateCommand =
+      generateCommand.trim()
+
+    return `name: API Compatibility
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run API Compatibility Analyzer
+        uses: ${GITHUB_ACTION_REPOSITORY}/.github/actions/api-compatibility@${GITHUB_ACTION_REF}
+        with:
+          api-base-url: ${yamlSingleQuote(
+            safeBaseUrl || 'https://YOUR-ANALYZER-URL',
+          )}
+          project-id: \${{ secrets.API_ANALYZER_PROJECT_ID }}
+          token: \${{ secrets.API_ANALYZER_TOKEN }}
+          spec-path: ${yamlSingleQuote(safeSpecPath)}
+          generate-command: ${yamlSingleQuote(
+            safeGenerateCommand,
+          )}
+          baseline-mode: ${yamlSingleQuote(baselineMode)}
+          fail-on-error: ${yamlSingleQuote(
+            failOnError ? 'true' : 'false',
+          )}
+          poll-timeout-seconds: '600'
+          poll-interval-seconds: '5'
+
+# Repository: ${safeRepo}
+# If fork PR support is required, use a trusted workflow_run/artifact pattern.
+`
+  }, [
+    repositoryInfo,
+    safeBaseUrl,
+    specPath,
+    generateCommand,
+    baselineMode,
+    failOnError,
+  ])
+
+  const progressLabels = [
+    {
+      number: 1,
+      title: 'Connect GitHub',
+      done: githubConnection.installation_connected,
+    },
+    {
+      number: 2,
+      title: 'Select repository',
+      done: githubConnection.connected,
+    },
+    {
+      number: 3,
+      title: 'Enable CI',
+      done: ciActive,
+    },
+    {
+      number: 4,
+      title: 'Monitor PRs',
+      done: ciActive,
+    },
+  ]
+
+  const renderConnectionState = () => {
+    if (!githubConnection.installation_connected) {
+      return (
+        <div className="github-onboarding-panel">
+          <div className="github-onboarding-icon">
+            <IconGithub />
+          </div>
+
+          <div className="github-onboarding-content">
+            <span className="github-onboarding-eyebrow">
+              STEP 1 · GITHUB
+            </span>
+            <h3>Connect your GitHub account</h3>
+            <p>
+              API Analyzer needs one-time GitHub authorization so it can
+              discover the repositories you choose. You do not need to paste
+              a GitHub token.
+            </p>
+
+            <button
+              type="button"
+              className="primary large-btn"
+              onClick={connectGithub}
+              disabled={githubConnecting || githubLoading || !projectId}
+            >
+              <IconGithub />
+              {githubConnecting
+                ? 'Opening GitHub…'
+                : 'Connect GitHub'}
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    if (!githubConnection.connected) {
+      return (
+        <div className="github-onboarding-panel">
+          <div className="github-onboarding-icon is-ready">
+            <IconCheck />
+          </div>
+
+          <div className="github-onboarding-content">
+            <span className="github-onboarding-eyebrow">
+              STEP 2 · REPOSITORY
+            </span>
+            <h3>Choose the repository to protect</h3>
+            <p>
+              Select one repository from the GitHub App installation. API
+              Analyzer will use this repository as the source for PR checks.
+            </p>
+
+            <div className="github-repository-toolbar">
+              <label className="github-repository-selector">
+                <span>GitHub Repository</span>
+                <select
+                  value={
+                    githubRepositories.some(
+                      (item) =>
+                        String(item.full_name || '').toLowerCase() ===
+                        String(repository || '').toLowerCase(),
+                    )
+                      ? repository
+                      : ''
+                  }
+                  onChange={(event) =>
+                    setRepository(event.target.value)
+                  }
+                  disabled={
+                    githubLoading ||
+                    repositoryConnecting ||
+                    githubRepositories.length === 0
+                  }
+                >
+                  <option value="">
+                    Select a repository
+                  </option>
+
+                  {githubRepositories.map((item) => (
+                    <option
+                      key={item.id || item.full_name}
+                      value={item.full_name}
+                    >
+                      {item.full_name}
+                      {item.private ? ' · private' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="github-repository-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={refreshGithub}
+                  disabled={githubLoading || repositoryConnecting}
+                >
+                  <IconRefresh
+                    className={githubLoading ? 'spin' : ''}
+                  />
+                  {githubLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+
+            {repositoryInfo && (
+              <div className="github-repository-summary">
+                <div>
+                  <small>Repository</small>
+                  <strong>{repositoryInfo.fullName}</strong>
+                </div>
+                <div>
+                  <small>Default branch</small>
+                  <strong>
+                    {selectedGithubRepository?.default_branch ||
+                      githubConnection.metadata?.default_branch ||
+                      selectedProject?.default_branch ||
+                      'main'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Visibility</small>
+                  <strong>
+                    {selectedGithubRepository?.private
+                      ? 'Private'
+                      : 'Public'}
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            <div className="github-app-connection-actions">
+              <button
+                type="button"
+                className="primary large-btn"
+                onClick={connectRepository}
+                disabled={
+                  repositoryConnecting ||
+                  githubLoading ||
+                  !repositoryInfo
+                }
+              >
+                <IconCheck />
+                {repositoryConnecting
+                  ? 'Connecting…'
+                  : 'Continue with repository'}
+              </button>
+
+              <span className="github-inline-help">
+                This links the selected repository to Project #
+                {projectId}.
+              </span>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="github-onboarding-panel is-complete">
+        <div className="github-onboarding-icon is-ready">
+          <IconCheck />
+        </div>
+
+        <div className="github-onboarding-content">
+          <span className="github-onboarding-eyebrow">
+            STEP 2 COMPLETE
+          </span>
+          <h3>
+            {repositoryInfo?.fullName || 'Repository'} is connected
+          </h3>
+          <p>
+            The GitHub App connection is working. One-time CI setup is the
+            remaining manual step in this version of API Analyzer.
+          </p>
+
+          <div className="github-connected-summary">
+            <span>
+              <strong>Installation</strong>{' '}
+              {githubConnection.installation_id || 'active'}
+            </span>
+            <span>
+              <strong>Repository</strong>{' '}
+              {repositoryInfo?.fullName || '—'}
+            </span>
+          </div>
+
+          <div className="github-app-connection-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={refreshGithub}
+              disabled={githubLoading}
+            >
+              <IconRefresh className={githubLoading ? 'spin' : ''} />
+              Refresh connection
+            </button>
+
+            <button
+              type="button"
+              className="secondary"
+              onClick={disconnectRepository}
+              disabled={repositoryConnecting}
+            >
+              Disconnect repository
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <section className="github-ci-page">
       <div className="github-ci-hero">
         <div>
           <span className="github-ci-kicker">
-            CI / GITHUB ACTIONS
+            CI / GITHUB
           </span>
 
-          <h2>GitHub CI Integration</h2>
-
+          <h2>Protect your API with GitHub</h2>
           <p>
-            Connect your GitHub repository once, then configure the
-            repository-side compatibility workflow and monitor PR
-            analyses from this workspace.
+            Connect once, choose your repository, and let API Analyzer check
+            every pull request. The current deployment requires a one-time
+            GitHub Actions setup.
           </p>
         </div>
 
         <div className="github-ci-hero-actions">
           <span
             className={`badge ${
-              setupReady
+              ciActive
                 ? 'badge-safe'
-                : workflowConfigReady
+                : integrationConnected
                   ? 'badge-warn'
                   : 'badge-warn'
             }`}
           >
-            {setupReady
-              ? 'Ready to configure CI'
-              : workflowConfigReady
-                ? 'Config ready · add CI token'
-                : 'Setup incomplete'}
+            {ciActive
+              ? 'CI active'
+              : integrationConnected
+                ? 'Repository connected'
+                : 'Setup required'}
           </span>
-
-          {repositoryInfo && (
-            <button
-              type="button"
-              className="secondary"
-              onClick={openGithub}
-            >
-              <IconGithub /> Repository
-            </button>
-          )}
 
           <button
             type="button"
-            className="primary"
+            className="secondary"
             onClick={onOpenCompare}
           >
             <IconCompare /> Manual Compare
@@ -2383,30 +2778,48 @@ jobs:
         </div>
       </div>
 
+      <div className="github-setup-progress">
+        {progressLabels.map((step) => (
+          <div
+            className={`github-progress-step ${
+              step.done
+                ? 'is-done'
+                : step.number === onboardingStep
+                  ? 'is-current'
+                  : ''
+            }`}
+            key={step.number}
+          >
+            <span>
+              {step.done ? <IconCheck /> : step.number}
+            </span>
+            <strong>{step.title}</strong>
+          </div>
+        ))}
+      </div>
+
       <div className="github-ci-layout">
         <div className="github-ci-main">
           <section className="panel github-ci-card">
             <div className="section-title">
               <div>
-                <h3>1. Project & GitHub connection</h3>
+                <h3>1. Connect your repository</h3>
                 <p>
-                  Connect the GitHub App and select a repository for this
-                  analyzer project. No repository URL or GitHub credential
-                  needs to be entered manually.
+                  Follow the short guided setup. You do not need to understand
+                  GitHub tokens or repository URLs.
                 </p>
               </div>
 
               {selectedProject && (
                 <span className="status-pill">
-                  Project #{selectedProject.id}
+                  {selectedProject.name} · #{selectedProject.id}
                 </span>
               )}
             </div>
 
-            <div className="form-grid">
-              <label>
+            {projects.length > 1 && (
+              <label className="github-project-selector">
                 <span>Analyzer Project</span>
-
                 <select
                   value={projectId}
                   onChange={(event) => {
@@ -2415,10 +2828,6 @@ jobs:
                     setValidation(null)
                   }}
                 >
-                  <option value="">
-                    Select a project
-                  </option>
-
                   {projects.map((project) => (
                     <option
                       key={project.id}
@@ -2429,562 +2838,154 @@ jobs:
                   ))}
                 </select>
               </label>
-            </div>
+            )}
 
-            <div className="github-app-connection-panel">
-              <div className="github-app-connection-head">
-                <div className="github-app-connection-copy">
-                  <span className="github-app-connection-icon">
-                    <IconGithub />
-                  </span>
+            {renderConnectionState()}
 
-                  <div>
-                    <strong>API Analyzer GitHub App</strong>
+            {githubError && (
+              <div className="notice notice-error github-ci-callout">
+                <span className="notice-icon">
+                  <IconAlertCircle />
+                </span>
+                <span className="notice-body">
+                  {githubError}
+                </span>
+              </div>
+            )}
+          </section>
 
-                    <small>
-                      {githubConnection.connected
-                        ? `Connected to ${githubConnection.repository_full_name}`
-                        : githubConnection.installation_connected
-                          ? 'GitHub App installed. Select a repository below.'
-                          : 'Install the GitHub App to securely access repositories you choose.'}
-                    </small>
-                  </div>
+          {integrationConnected && (
+            <section className="panel github-ci-card github-simple-setup-card">
+              <div className="section-title">
+                <div>
+                  <h3>2. Finish the one-time CI setup</h3>
+                  <p>
+                    For this deployment, this is the only part that still
+                    needs to be done in GitHub. After it is configured, every
+                    PR can be checked automatically.
+                  </p>
                 </div>
 
                 <span
                   className={`status-pill ${
-                    githubConnection.connected
-                      ? 'github-status-ok'
-                      : githubConnection.installation_connected
-                        ? 'github-status-warn'
-                        : ''
+                    ciActive ? 'github-status-ok' : ''
                   }`}
                 >
-                  {githubConnection.connected
-                    ? 'Connected'
-                    : githubConnection.installation_connected
-                      ? 'App installed'
-                      : 'Not connected'}
+                  {ciActive ? 'CI is active' : 'One-time setup'}
                 </span>
               </div>
 
-              {!githubConnection.installation_connected ? (
-                <div className="github-app-connection-body">
-                  <div className="github-app-steps">
-                    <div>
-                      <span>01</span>
-                      <strong>Connect GitHub</strong>
-                      <small>Authorize the API Analyzer GitHub App.</small>
-                    </div>
-
-                    <div>
-                      <span>02</span>
-                      <strong>Select repository</strong>
-                      <small>Choose only the repository this project should use.</small>
-                    </div>
-
-                    <div>
-                      <span>03</span>
-                      <strong>Configure CI</strong>
-                      <small>Add the generated workflow and project secrets.</small>
-                    </div>
+              {ciActive ? (
+                <div className="github-ci-ready-banner">
+                  <div className="github-ci-ready-icon">
+                    <IconCheck />
                   </div>
-
-                  <button
-                    type="button"
-                    className="primary github-connect-button"
-                    onClick={connectGithub}
-                    disabled={
-                      githubConnecting ||
-                      githubLoading ||
-                      !projectId
-                    }
-                  >
-                    <IconGithub />
-                    {githubConnecting
-                      ? 'Opening GitHub…'
-                      : 'Connect GitHub'}
-                  </button>
+                  <div>
+                    <strong>GitHub Actions is already sending results</strong>
+                    <p>
+                      API Analyzer has received {connectedRuns.length}{' '}
+                      CI-linked comparison
+                      {connectedRuns.length === 1 ? '' : 's'} for this
+                      repository. You do not need to generate another
+                      browser token just to view these results.
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <div className="github-app-connection-body">
-                  <div className="github-repository-toolbar">
-                    <label className="github-repository-selector">
-                      <span>GitHub Repository</span>
-
-                      <select
-                        value={
-                          githubRepositories.some(
-                            (item) =>
-                              String(item.full_name) ===
-                              String(repository),
-                          )
-                            ? repository
-                            : ''
-                        }
-                        onChange={(event) =>
-                          setRepository(event.target.value)
-                        }
-                        disabled={
-                          githubLoading ||
-                          repositoryConnecting ||
-                          githubRepositories.length === 0
-                        }
-                      >
-                        <option value="">
-                          Select a repository
-                        </option>
-
-                        {githubRepositories.map((item) => (
-                          <option
-                            key={item.id || item.full_name}
-                            value={item.full_name}
-                          >
-                            {item.full_name}
-                            {item.private ? ' · private' : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <div className="github-repository-actions">
+                <>
+                  <div className="github-one-time-steps">
+                    <div className="github-one-time-step">
+                      <span>1</span>
+                      <div>
+                        <strong>Generate the CI credential</strong>
+                        <small>
+                          Generate it once and store it in GitHub Secrets.
+                        </small>
+                      </div>
                       <button
                         type="button"
                         className="secondary"
-                        onClick={refreshGithub}
-                        disabled={
-                          githubLoading ||
-                          repositoryConnecting
-                        }
+                        onClick={generateCIToken}
+                        disabled={tokenLoading || !projectId}
                       >
-                        <IconRefresh
-                          className={
-                            githubLoading
-                              ? 'spin'
-                              : ''
-                          }
-                        />
-                        {githubLoading
-                          ? 'Refreshing…'
-                          : 'Refresh'}
+                        {tokenLoading
+                          ? 'Generating…'
+                          : 'Generate token'}
                       </button>
+                    </div>
 
+                    <div className="github-one-time-step">
+                      <span>2</span>
+                      <div>
+                        <strong>Add it to GitHub</strong>
+                        <small>
+                          API Analyzer will give you the exact secret values
+                          and names.
+                        </small>
+                      </div>
                       <button
                         type="button"
                         className="secondary"
-                        onClick={connectGithub}
-                        disabled={
-                          githubConnecting ||
-                          githubLoading
-                        }
+                        onClick={openGithubSecrets}
+                        disabled={!repositoryInfo}
                       >
-                        <IconGithub />
-                        Reauthorize
+                        <IconGithub /> Open Secrets
                       </button>
                     </div>
-                  </div>
 
-                  <div className="github-repository-summary">
-                    <div>
-                      <small>Installation</small>
-                      <strong>
-                        {githubConnection.installation_id || 'Active'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <small>Available repositories</small>
-                      <strong>
-                        {githubRepositories.length}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <small>Selected repository</small>
-                      <strong>
-                        {repository || 'Not selected'}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <small>Default branch</small>
-                      <strong>
-                        {selectedGithubRepository?.default_branch ||
-                          githubConnection.metadata?.default_branch ||
-                          selectedProject?.default_branch ||
-                          '—'}
-                      </strong>
-                    </div>
-                  </div>
-
-                  {!githubConnection.connected && (
-                    <div className="github-app-connection-actions">
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={connectRepository}
-                        disabled={
-                          repositoryConnecting ||
-                          githubLoading ||
-                          !repositoryInfo
-                        }
-                      >
-                        <IconCheck />
-                        {repositoryConnecting
-                          ? 'Connecting…'
-                          : 'Connect Repository'}
-                      </button>
-
-                      <span className="github-inline-help">
-                        The selected repository will be linked to this analyzer project.
-                      </span>
-                    </div>
-                  )}
-
-                  {githubConnection.connected && (
-                    <div className="github-app-connection-actions">
-                      <span className="github-connected-note">
-                        <IconCheck />
-                        Repository is connected to this project.
-                      </span>
-
+                    <div className="github-one-time-step">
+                      <span>3</span>
+                      <div>
+                        <strong>Add the workflow</strong>
+                        <small>
+                          Paste the generated workflow into your repository.
+                        </small>
+                      </div>
                       <button
                         type="button"
                         className="secondary"
-                        onClick={disconnectRepository}
-                        disabled={
-                          repositoryConnecting ||
-                          githubLoading
+                        onClick={() =>
+                          setAdvancedOpen(true)
                         }
                       >
-                        {repositoryConnecting
-                          ? 'Updating…'
-                          : 'Disconnect Repository'}
+                        Show workflow
                       </button>
                     </div>
-                  )}
-                </div>
-              )}
-
-              {githubError && (
-                <div className="notice notice-error github-ci-callout">
-                  <span className="notice-icon">
-                    <IconAlertCircle />
-                  </span>
-                  <span className="notice-body">
-                    {githubError}
-                  </span>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="panel github-ci-card">
-            <div className="section-title">
-              <div>
-                <h3>2. CI configuration</h3>
-                <p>
-                  Keep these contract and gate settings here. They are saved
-                  as a local non-secret setup draft for the selected project.
-                </p>
-              </div>
-
-              {selectedProject && (
-                <span className="status-pill">
-                  {githubConnection.connected
-                    ? repository
-                    : 'Manual fallback supported'}
-                </span>
-              )}
-            </div>
-
-            <div className="form-grid">
-              <label>
-                <span>Analyzer Backend URL</span>
-
-                <input
-                  type="url"
-                  value={analyzerBaseUrl}
-                  onChange={(event) =>
-                    setAnalyzerBaseUrl(event.target.value)
-                  }
-                  placeholder="https://api-analyzer-backend.onrender.com"
-                  autoComplete="url"
-                />
-              </label>
-
-              {!githubConnection.connected && (
-                <label>
-                  <span>Manual Repository Fallback</span>
-
-                  <input
-                    type="text"
-                    value={repository}
-                    onChange={(event) =>
-                      setRepository(event.target.value)
-                    }
-                    placeholder="owner/repository"
-                    autoComplete="off"
-                  />
-                  <small className="field-help">
-                    Use this only when you are intentionally running the existing
-                    manual GitHub Actions setup without an App-connected repository.
-                  </small>
-                </label>
-              )}
-
-              <label>
-                <span>OpenAPI Specification Path</span>
-
-                <input
-                  type="text"
-                  value={specPath}
-                  onChange={(event) =>
-                    setSpecPath(event.target.value)
-                  }
-                  placeholder="openapi.json"
-                />
-              </label>
-
-              <label className="form-grid-wide">
-                <span>Generate Command (optional)</span>
-
-                <input
-                  type="text"
-                  value={generateCommand}
-                  onChange={(event) =>
-                    setGenerateCommand(event.target.value)
-                  }
-                  placeholder="python manage.py spectacular --file openapi.json"
-                />
-              </label>
-
-              <label>
-                <span>Baseline Mode</span>
-
-                <select
-                  value={baselineMode}
-                  onChange={(event) =>
-                    setBaselineMode(event.target.value)
-                  }
-                >
-                  <option value="merge-base">
-                    merge-base
-                  </option>
-                  <option value="base">
-                    target branch head
-                  </option>
-                </select>
-              </label>
-
-              <label className="github-toggle-field">
-                <span>Fail CI on analyzer error</span>
-
-                <button
-                  type="button"
-                  className={`toggle-control ${
-                    failOnError ? 'active' : ''
-                  }`}
-                  aria-pressed={failOnError}
-                  onClick={() =>
-                    setFailOnError(
-                      (value) => !value,
-                    )
-                  }
-                >
-                  <span className="toggle-knob" />
-                </button>
-              </label>
-            </div>
-
-            {localAnalyzerUrl && (
-              <div className="notice notice-warning github-ci-callout">
-                <span className="notice-icon">
-                  <IconAlertCircle />
-                </span>
-
-                <span className="notice-body">
-                  GitHub-hosted runners cannot call your localhost or
-                  127.0.0.1 backend. Use a deployed HTTPS analyzer endpoint.
-                </span>
-              </div>
-            )}
-          </section>
-
-          <section className="panel github-ci-card">
-            <div className="section-title">
-              <div>
-                <h3>3. Validate analyzer setup</h3>
-
-                <p>
-                  This verifies authenticated access to the selected analyzer
-                  project and confirms that the connected GitHub repository can
-                  be used by the workflow.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                className="primary"
-                onClick={validateAnalyzerSetup}
-                disabled={validationLoading}
-              >
-                {validationLoading
-                  ? 'Validating…'
-                  : 'Validate Setup'}
-              </button>
-            </div>
-
-            <div className="github-setup-check-list">
-              {setupChecks.map((check) => (
-                <div
-                  className={`github-setup-check ${
-                    check.ok
-                      ? 'is-ok'
-                      : 'is-pending'
-                  }`}
-                  key={check.label}
-                >
-                  <span className="github-setup-check-icon">
-                    {check.ok ? '✓' : '!'}
-                  </span>
-
-                  <div>
-                    <strong>{check.label}</strong>
-                    <small>{check.detail}</small>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {validation && (
-              <div
-                className={`notice ${
-                  validation.ok
-                    ? 'notice-success'
-                    : 'notice-error'
-                } github-ci-callout`}
-              >
-                <span className="notice-body">
-                  {validation.message}
-                </span>
-              </div>
-            )}
-          </section>
-
-          <section className="panel github-ci-card">
-            <div className="section-title">
-              <div>
-                <h3>4. GitHub Actions secrets</h3>
-
-                <p>
-                  The browser never stores the project CI token. Copy it once,
-                  then save it in GitHub Actions Secrets.
-                </p>
-              </div>
-            </div>
-
-            <div className="github-secret-grid">
-              <article className="github-secret-card">
-                <div className="github-secret-number">
-                  01
-                </div>
-
-                <div>
-                  <strong>API_ANALYZER_BASE_URL</strong>
-
-                  <small>
-                    {analyzerBaseUrl ||
-                      'Set your public analyzer backend URL.'}
-                  </small>
-                </div>
-              </article>
-
-              <article className="github-secret-card">
-                <div className="github-secret-number">
-                  02
-                </div>
-
-                <div>
-                  <strong>API_ANALYZER_PROJECT_ID</strong>
-
-                  <small>
-                    {projectId ||
-                      'Select an analyzer project.'}
-                  </small>
-                </div>
-              </article>
-
-              <article className="github-secret-card secret-token">
-                <div className="github-secret-number">
-                  03
-                </div>
-
-                <div className="github-secret-token-content">
-                  <strong>API_ANALYZER_TOKEN</strong>
-
-                  <small>
-                    Project-scoped credential generated by the
-                    analyzer backend.
-                  </small>
-
-                  <div className="github-ci-actions-row">
-                    <button
-                      type="button"
-                      className="primary"
-                      onClick={generateCIToken}
-                      disabled={
-                        tokenLoading ||
-                        !projectId
-                      }
-                    >
-                      {tokenLoading
-                        ? 'Generating…'
-                        : 'Generate CI Token'}
-                    </button>
-
-                    {ciToken && (
-                      <>
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={copyCIToken}
-                        >
-                          {tokenCopied
-                            ? 'Copied'
-                            : 'Copy Token'}
-                        </button>
-
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() =>
-                            setTokenVisible(
-                              (value) =>
-                                !value,
-                            )
-                          }
-                        >
-                          {tokenVisible
-                            ? 'Hide'
-                            : 'Show'}
-                        </button>
-                      </>
-                    )}
                   </div>
 
                   {ciToken && (
-                    <>
-                      <div className="notice notice-warning github-token-warning">
-                        <span className="notice-icon">
-                          <IconAlertCircle />
-                        </span>
+                    <div className="github-token-panel-simple">
+                      <div className="github-token-panel-head">
+                        <div>
+                          <strong>Your new CI credential</strong>
+                          <small>
+                            Keep this secret. API Analyzer will not display it
+                            again after this browser session.
+                          </small>
+                        </div>
 
-                        <span className="notice-body">
-                          This token is shown only in the current
-                          browser session. Store it in GitHub and do
-                          not commit it.
-                        </span>
+                        <div className="github-ci-actions-row">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={copyToken}
+                          >
+                            {tokenCopied
+                              ? 'Copied'
+                              : 'Copy token'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              setTokenVisible(
+                                (value) => !value,
+                              )
+                            }
+                          >
+                            {tokenVisible ? 'Hide' : 'Show'}
+                          </button>
+                        </div>
                       </div>
 
                       <code className="github-token-value">
@@ -2992,132 +2993,251 @@ jobs:
                           ? ciToken
                           : maskSecret(ciToken)}
                       </code>
-                    </>
-                  )}
 
-                  {tokenError && (
-                    <div className="notice notice-error github-token-warning">
-                      <span className="notice-body">
-                        {tokenError}
-                      </span>
+                      {tokenError && (
+                        <div className="notice notice-error github-token-warning">
+                          <span className="notice-body">
+                            {tokenError}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
-              </article>
-            </div>
+                </>
+              )}
 
-            <div className="github-secret-copy-row">
-              <div>
-                <strong>
-                  Required GitHub secret names
-                </strong>
+              <div className="github-simple-help">
+                <strong>What you need to know:</strong>
+                <span>
+                  You do not create an OpenAPI document inside API Analyzer
+                  for this CI flow. The workflow reads the contract from your
+                  repository.
+                </span>
+                <span>
+                  For this deployment, the default contract path is{' '}
+                  <code>openapi.json</code>. Change it only when your
+                  repository stores the contract somewhere else.
+                </span>
+              </div>
+            </section>
+          )}
 
+          <details
+            className="github-advanced-panel"
+            open={advancedOpen}
+            onToggle={(event) =>
+              setAdvancedOpen(event.currentTarget.open)
+            }
+          >
+            <summary>
+              <span>
+                <strong>Advanced / manual setup</strong>
                 <small>
-                  Use these exact names under Settings →
-                  Secrets and variables → Actions.
+                  Use this when you need to customize the contract source or
+                  inspect the workflow.
                 </small>
+              </span>
+              <span className="advanced-chevron">⌄</span>
+            </summary>
+
+            <div className="github-advanced-body">
+              <div className="form-grid">
+                <label>
+                  <span>Analyzer Backend URL</span>
+                  <input
+                    type="url"
+                    value={analyzerBaseUrl}
+                    onChange={(event) =>
+                      setAnalyzerBaseUrl(event.target.value)
+                    }
+                    placeholder="https://api-analyzer-backend.onrender.com"
+                  />
+                  <small className="field-help">
+                    Pre-filled in the production frontend. GitHub Actions
+                    needs a public HTTPS endpoint.
+                  </small>
+                </label>
+
+                <label>
+                  <span>OpenAPI Specification Path</span>
+                  <input
+                    type="text"
+                    value={specPath}
+                    onChange={(event) =>
+                      setSpecPath(event.target.value)
+                    }
+                    placeholder="openapi.json"
+                  />
+                </label>
+
+                <label className="form-grid-wide">
+                  <span>Generate Command (optional)</span>
+                  <input
+                    type="text"
+                    value={generateCommand}
+                    onChange={(event) =>
+                      setGenerateCommand(event.target.value)
+                    }
+                    placeholder="python manage.py spectacular --file openapi.json"
+                  />
+                  <small className="field-help">
+                    Use this only when the repository generates the contract
+                    during CI.
+                  </small>
+                </label>
+
+                <label>
+                  <span>Baseline Mode</span>
+                  <select
+                    value={baselineMode}
+                    onChange={(event) =>
+                      setBaselineMode(event.target.value)
+                    }
+                  >
+                    <option value="merge-base">
+                      merge-base · common ancestor
+                    </option>
+                    <option value="base">
+                      base · target branch
+                    </option>
+                  </select>
+                </label>
+
+                <label className="github-toggle-field">
+                  <span>Fail CI on analyzer error</span>
+                  <button
+                    type="button"
+                    className={`toggle-control ${
+                      failOnError ? 'active' : ''
+                    }`}
+                    aria-pressed={failOnError}
+                    onClick={() =>
+                      setFailOnError(
+                        (value) => !value,
+                      )
+                    }
+                  >
+                    <span className="toggle-knob" />
+                  </button>
+                </label>
               </div>
 
-              <div className="github-ci-actions-row">
+              <div className="github-advanced-actions">
                 <button
                   type="button"
                   className="secondary"
-                  onClick={() =>
-                    navigator.clipboard.writeText(
-                      'API_ANALYZER_BASE_URL\nAPI_ANALYZER_PROJECT_ID\nAPI_ANALYZER_TOKEN',
-                    )
-                  }
+                  onClick={validateAnalyzerSetup}
+                  disabled={validationLoading}
                 >
-                  Copy Names
+                  <IconCheck />
+                  {validationLoading
+                    ? 'Checking…'
+                    : 'Check setup'}
                 </button>
-
-                {repositoryInfo && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={openGithubSecrets}
-                  >
-                    <IconGithub /> Open Secrets
-                  </button>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="panel github-ci-card">
-            <div className="section-title">
-              <div>
-                <h3>5. Repository workflow</h3>
-
-                <p>
-                  Commit this workflow to
-                  <code> .github/workflows/api-compatibility.yml </code>
-                  in the connected repository.
-                </p>
-              </div>
-
-              <div className="github-ci-actions-row">
-                {repositoryInfo && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={openGithubActions}
-                  >
-                    <IconGithub /> Actions
-                  </button>
-                )}
 
                 <button
                   type="button"
-                  className="primary"
-                  onClick={copyWorkflow}
+                  className="secondary"
+                  onClick={copySecretNames}
                 >
-                  <IconGithub />{' '}
-                  {copiedWorkflow
-                    ? 'Copied'
-                    : 'Copy Workflow'}
+                  Copy secret names
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={openGithubActions}
+                  disabled={!repositoryInfo}
+                >
+                  <IconGithub /> GitHub Actions
                 </button>
               </div>
+
+              {validation && (
+                <div
+                  className={`notice ${
+                    validation.ok
+                      ? 'notice-success'
+                      : 'notice-error'
+                  } github-ci-callout`}
+                >
+                  <span className="notice-icon">
+                    {validation.ok ? (
+                      <IconCheck />
+                    ) : (
+                      <IconAlertCircle />
+                    )}
+                  </span>
+                  <span className="notice-body">
+                    {validation.message}
+                  </span>
+                </div>
+              )}
+
+              <div className="github-workflow-card">
+                <div className="section-title">
+                  <div>
+                    <h4>Repository workflow</h4>
+                    <p>
+                      Commit this file only if you are using the current
+                      GitHub Actions integration.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(
+                          workflowYaml,
+                        )
+                      } catch {
+                        // Clipboard is a convenience only.
+                      }
+                    }}
+                  >
+                    <IconGithub /> Copy workflow
+                  </button>
+                </div>
+
+                <pre className="github-workflow-code">
+                  <code>{workflowYaml}</code>
+                </pre>
+
+                <div className="github-ci-step-strip">
+                  <div>
+                    <span>01</span>
+                    <strong>Create secrets</strong>
+                    <small>
+                      Base URL · Project ID · Token
+                    </small>
+                  </div>
+                  <div>
+                    <span>02</span>
+                    <strong>Add workflow</strong>
+                    <small>
+                      Pull Request trigger
+                    </small>
+                  </div>
+                  <div>
+                    <span>03</span>
+                    <strong>Open / update PR</strong>
+                    <small>
+                      GitHub starts the Action
+                    </small>
+                  </div>
+                  <div>
+                    <span>04</span>
+                    <strong>Review result</strong>
+                    <small>
+                      PASS · WARN · FAIL · ERROR
+                    </small>
+                  </div>
+                </div>
+              </div>
             </div>
-
-            <pre className="github-workflow-code">
-              <code>{workflowYaml}</code>
-            </pre>
-
-            <div className="github-ci-step-strip">
-              <div>
-                <span>01</span>
-                <strong>Create secrets</strong>
-                <small>
-                  Base URL · Project ID · Token
-                </small>
-              </div>
-
-              <div>
-                <span>02</span>
-                <strong>Add workflow</strong>
-                <small>
-                  PR trigger + analyzer action
-                </small>
-              </div>
-
-              <div>
-                <span>03</span>
-                <strong>Open / update PR</strong>
-                <small>
-                  Base + head contracts are produced in CI
-                </small>
-              </div>
-
-              <div>
-                <span>04</span>
-                <strong>Review gate</strong>
-                <small>
-                  PASS · WARN · FAIL · ERROR
-                </small>
-              </div>
-            </div>
-          </section>
+          </details>
         </div>
 
         <aside className="github-ci-side">
@@ -3125,13 +3245,11 @@ jobs:
             <div className="section-title">
               <div>
                 <h3>CI tracker</h3>
-
                 <p>
-                  Real comparison records already stored for this
-                  project/repository.
+                  Real comparison records for the selected project and
+                  repository.
                 </p>
               </div>
-
               <span className="status-pill">
                 {connectedRuns.length} runs
               </span>
@@ -3142,147 +3260,245 @@ jobs:
                 <span className="notice-icon">
                   <IconRefresh className="spin" />
                 </span>
-
                 <span className="notice-body">
-                  An active run is being refreshed every 10 seconds.
+                  A CI run is in progress. Results refresh automatically.
                 </span>
               </div>
             )}
 
             {connectedRuns.length > 0 ? (
               <div className="github-ci-runs">
-                {connectedRuns
-                  .slice(0, 10)
-                  .map((comparison) => {
-                    const gate =
-                      getGateStatus(comparison)
+                {connectedRuns.slice(0, 10).map((comparison) => {
+                  const gate = getGateStatus(comparison)
+                  const counts = getComparisonCounts(comparison)
 
-                    const counts =
-                      getComparisonCounts(
-                        comparison,
-                      )
+                  const prLabel =
+                    comparison.pull_request_number
+                      ? `PR #${comparison.pull_request_number}`
+                      : `Comparison #${comparison.id}`
 
-                    const repo =
-                      comparison.repository ||
-                      'unknown repository'
-
-                    const prLabel =
-                      comparison.pull_request_number
-                        ? `PR #${comparison.pull_request_number}`
-                        : `Comparison #${comparison.id}`
-
-                    return (
-                      <article
-                        className="github-ci-run-row"
-                        key={comparison.id}
+                  return (
+                    <article
+                      className="github-ci-run-row"
+                      key={comparison.id}
+                    >
+                      <div
+                        className={`github-ci-run-status ${
+                          gate === 'PASS'
+                            ? 'is-pass'
+                            : gate === 'WARN'
+                              ? 'is-warn'
+                              : gate === 'FAIL' ||
+                                  gate === 'ERROR'
+                                ? 'is-fail'
+                                : 'is-pending'
+                        }`}
                       >
-                        <div
-                          className={`github-ci-run-status ${
-                            gate === 'PASS'
-                              ? 'is-pass'
-                              : gate === 'WARN'
-                                ? 'is-warn'
-                                : gate === 'FAIL' ||
-                                    gate === 'ERROR'
-                                  ? 'is-fail'
-                                  : 'is-pending'
-                          }`}
+                        {gate}
+                      </div>
+
+                      <div className="github-ci-run-main">
+                        <strong>{prLabel}</strong>
+                        <small>
+                          {comparison.repository ||
+                            'unknown repository'}
+                        </small>
+                        <small>
+                          {comparison.base_sha
+                            ? String(
+                                comparison.base_sha,
+                              ).slice(0, 10)
+                            : 'base'}
+                          {' → '}
+                          {comparison.head_sha
+                            ? String(
+                                comparison.head_sha,
+                              ).slice(0, 10)
+                            : 'head'}
+                        </small>
+                        <small>
+                          {counts.breaking} breaking ·{' '}
+                          {counts.potentiallyBreaking} potential ·{' '}
+                          {counts.nonBreaking} compatible
+                        </small>
+                      </div>
+
+                      <div className="github-ci-run-actions">
+                        <span
+                          className={`badge ${gateBadgeClass(
+                            gate,
+                          )}`}
                         >
                           {gate}
-                        </div>
+                        </span>
 
-                        <div className="github-ci-run-main">
-                          <strong>
-                            {prLabel}
-                          </strong>
-
-                          <small>{repo}</small>
-
-                          <small>
-                            {comparison.base_sha
-                              ? String(
-                                  comparison.base_sha,
-                                ).slice(0, 10)
-                              : 'base'}
-                            {' → '}
-                            {comparison.head_sha
-                              ? String(
-                                  comparison.head_sha,
-                                ).slice(0, 10)
-                              : 'head'}
-                          </small>
-
-                          <small>
-                            {counts.breaking} breaking ·{' '}
-                            {counts.potentiallyBreaking}{' '}
-                            potential ·{' '}
-                            {counts.nonBreaking}{' '}
-                            compatible
-                          </small>
-                        </div>
-
-                        <div className="github-ci-run-actions">
-                          <span
-                            className={`badge ${gateBadgeClass(
-                              gate,
-                            )}`}
-                          >
-                            {gate}
-                          </span>
-
-                          <button
-                            type="button"
-                            className="secondary small-btn"
-                            onClick={() =>
-                              onSelectComparison(
-                                comparison,
-                              )
-                            }
-                          >
-                            View
-                          </button>
-                        </div>
-                      </article>
-                    )
-                  })}
+                        <button
+                          type="button"
+                          className="secondary small-btn"
+                          onClick={() =>
+                            setSelectedRunId(
+                              String(comparison.id),
+                            )
+                          }
+                        >
+                          View
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
               </div>
             ) : (
               <div className="github-ci-empty">
                 <IconGithub />
-
-                <strong>
-                  No CI-linked runs for this configuration
-                </strong>
-
+                <strong>No CI results yet</strong>
                 <p>
-                  Once GitHub Actions submits a comparison with
-                  this project and repository, its gate and revision
-                  metadata will appear here.
+                  After the one-time GitHub Actions setup, open or update a
+                  pull request. The first result will appear here
+                  automatically.
                 </p>
               </div>
             )}
           </section>
 
+          {selectedRun && (
+            <section className="panel github-ci-card github-run-detail-card">
+              <div className="section-title">
+                <div>
+                  <span className="github-ci-kicker">
+                    CI RESULT
+                  </span>
+                  <h3>
+                    {selectedRun.pull_request_number
+                      ? `Pull Request #${selectedRun.pull_request_number}`
+                      : `Comparison #${selectedRun.id}`}
+                  </h3>
+                  <p>
+                    {selectedRun.repository ||
+                      'Repository not available'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setSelectedRunId('')}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="github-run-result-hero">
+                <div
+                  className={`github-run-result-status ${getGateStatus(
+                    selectedRun,
+                  ) === 'PASS'
+                    ? 'is-pass'
+                    : getGateStatus(selectedRun) === 'WARN'
+                      ? 'is-warn'
+                      : getGateStatus(selectedRun) === 'FAIL' ||
+                          getGateStatus(selectedRun) === 'ERROR'
+                        ? 'is-fail'
+                        : 'is-pending'
+                  }`}
+                >
+                  {getGateStatus(selectedRun)}
+                </div>
+
+                <div>
+                  <strong>
+                    {gateDescription(selectedRun)}
+                  </strong>
+                  <span>
+                    Comparison #{selectedRun.id}
+                  </span>
+                </div>
+              </div>
+
+              <div className="github-run-detail-grid">
+                <div>
+                  <small>Base revision</small>
+                  <strong>
+                    {selectedRun.base_sha || '—'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Head revision</small>
+                  <strong>
+                    {selectedRun.head_sha || '—'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Breaking</small>
+                  <strong>
+                    {getComparisonCounts(selectedRun).breaking}
+                  </strong>
+                </div>
+                <div>
+                  <small>Total changes</small>
+                  <strong>
+                    {getComparisonCounts(selectedRun).total}
+                  </strong>
+                </div>
+              </div>
+
+              {getComparisonCounts(selectedRun).total === 0 ? (
+                <div className="no-contract-changes compact">
+                  <div className="no-contract-changes-icon">
+                    <IconShieldCheck />
+                  </div>
+                  <h4>No semantic contract changes</h4>
+                  <p>
+                    The base and head contracts are structurally equivalent
+                    for this CI comparison.
+                  </p>
+                </div>
+              ) : (
+                <ChangeList
+                  changes={Array.isArray(selectedRun.changes)
+                    ? selectedRun.changes
+                    : []}
+                />
+              )}
+
+              <div className="github-run-detail-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => {
+                    onSelectComparison(selectedRun)
+                    window.location.hash = '#/dashboard'
+                  }}
+                >
+                  <IconLayers /> Open full report
+                </button>
+
+                {repositoryInfo && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={openGithub}
+                  >
+                    <IconGithub /> Open repository
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+
           <section className="panel github-ci-card">
             <div className="section-title">
               <div>
-                <h3>What is connected today?</h3>
+                <h3>Connection status</h3>
                 <p>
-                  Live state from the GitHub App integration.
+                  Only the status you need to know is shown here.
                 </p>
               </div>
             </div>
 
             <div className="github-connection-state">
               <div className="connection-row">
-                <span>Analyzer API</span>
-                <strong className="is-ready">
-                  Available
-                </strong>
-              </div>
-
-              <div className="connection-row">
-                <span>GitHub App installation</span>
+                <span>GitHub App</span>
                 <strong
                   className={
                     githubConnection.installation_connected
@@ -3297,7 +3513,7 @@ jobs:
               </div>
 
               <div className="connection-row">
-                <span>GitHub repository</span>
+                <span>Repository</span>
                 <strong
                   className={
                     githubConnection.connected
@@ -3306,100 +3522,59 @@ jobs:
                   }
                 >
                   {githubConnection.connected
-                    ? repository
-                    : 'Not selected'}
+                    ? repositoryInfo?.fullName || 'Connected'
+                    : 'Choose repository'}
                 </strong>
               </div>
 
               <div className="connection-row">
-                <span>Project CI token</span>
+                <span>CI</span>
                 <strong
                   className={
-                    ciToken
+                    ciActive
                       ? 'is-ready'
-                      : 'is-pending'
+                      : ciToken
+                        ? 'is-pending'
+                        : 'is-pending'
                   }
                 >
-                  {ciToken
-                    ? 'Generated'
-                    : 'Not generated'}
+                  {ciActive
+                    ? 'Active'
+                    : ciToken
+                      ? 'Credential ready'
+                      : 'Not configured'}
                 </strong>
               </div>
-
-              <div className="connection-row">
-                <span>GitHub Actions</span>
-                <strong className="is-ready">
-                  Supported
-                </strong>
-              </div>
-
-              <div className="connection-row">
-                <span>Webhook-driven PR analysis</span>
-                <strong className="is-pending">
-                  Next backend phase
-                </strong>
-              </div>
-            </div>
-
-            <div className="notice notice-info github-ci-callout">
-              <span className="notice-icon">
-                <IconInfo />
-              </span>
-
-              <span className="notice-body">
-                GitHub App installation and repository discovery are
-                now live. Webhook-driven PR analysis is intentionally
-                separate from this setup and will use the existing
-                CI analysis pipeline.
-              </span>
             </div>
           </section>
 
           <section className="panel github-ci-card">
             <div className="section-title">
               <div>
-                <h3>Gate semantics</h3>
-
+                <h3>What happens next?</h3>
                 <p>
-                  Execution status and compatibility decision are
-                  different things.
+                  Once CI is active, the developer workflow becomes simple.
                 </p>
               </div>
             </div>
 
-            <div className="github-gate-legend">
-              {[
-                'PASS',
-                'WARN',
-                'FAIL',
-                'ERROR',
-              ].map((gate) => (
-                <div key={gate}>
-                  <span
-                    className={`badge ${gateBadgeClass(
-                      gate,
-                    )}`}
-                  >
-                    {gate}
-                  </span>
-
-                  <small>
-                    {gate === 'PASS'
-                      ? 'Safe under project policy'
-                      : gate === 'WARN'
-                        ? 'Review / policy risk'
-                        : gate === 'FAIL'
-                          ? 'Breaking change blocks release'
-                          : 'Analyzer failure; not a compatibility pass'}
-                  </small>
-                </div>
-              ))}
-            </div>
-
-            <div className="github-ci-callout-text">
-              {comparisonSummaryNote(
-                connectedRuns[0],
-              )}
+            <div className="github-next-flow">
+              <div>
+                <span>01</span>
+                <strong>Developer opens PR</strong>
+              </div>
+              <div>
+                <span>02</span>
+                <strong>GitHub Action runs</strong>
+              </div>
+              <div>
+                <span>03</span>
+                <strong>API Analyzer compares contracts</strong>
+              </div>
+              <div>
+                <span>04</span>
+                <strong>PASS / WARN / FAIL appears</strong>
+              </div>
             </div>
           </section>
         </aside>
