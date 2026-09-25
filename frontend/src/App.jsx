@@ -1812,6 +1812,9 @@ function GitHubCIPage({
   const [githubConnecting, setGithubConnecting] = useState(false)
   const [repositoryConnecting, setRepositoryConnecting] = useState(false)
   const [githubError, setGithubError] = useState('')
+  const [githubScan, setGithubScan] = useState(null)
+  const [githubScanning, setGithubScanning] = useState(false)
+  const [githubScanError, setGithubScanError] = useState('')
 
   const [ciToken, setCiToken] = useState('')
   const [tokenVisible, setTokenVisible] = useState(false)
@@ -1931,6 +1934,8 @@ function GitHubCIPage({
     setTokenError('')
     setValidation(null)
     setSelectedRunId('')
+    setGithubScan(null)
+    setGithubScanError('')
 
     const load = async () => {
       if (cancelled) return
@@ -2100,6 +2105,39 @@ function GitHubCIPage({
     return status === 'queued' || status === 'running'
   })
 
+
+  useEffect(() => {
+    if (!onRefresh) return undefined
+
+    // Keep the GitHub CI tracker live even when the page was opened
+    // before GitHub Actions created a comparison. Previously polling
+    // started only after an active run was already present, so a page
+    // showing 0 runs could remain stale forever.
+    const refresh = () => onRefresh()
+
+    refresh()
+
+    const timer = window.setInterval(
+      refresh,
+      10000,
+    )
+
+    const handleFocus = () => refresh()
+
+    const handleVisibility = () => {
+      if (!document.hidden) refresh()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [onRefresh])
+
   const analyzerUrlValid = /^https:\/\/[^\s]+$/i.test(
     analyzerBaseUrl.trim(),
   )
@@ -2128,14 +2166,18 @@ function GitHubCIPage({
 
   const ciActive = connectedRuns.length > 0
 
+  const scanComplete = Boolean(githubScan)
+
   const onboardingStep =
     !githubConnection.installation_connected
       ? 1
       : !githubConnection.connected
         ? 2
-        : !ciActive && !ciToken
+        : !scanComplete
           ? 3
-          : 4
+          : !ciActive && !ciToken
+            ? 4
+            : 5
 
   const validateAnalyzerSetup = async () => {
     setValidationLoading(true)
@@ -2207,6 +2249,7 @@ function GitHubCIPage({
       setValidationLoading(false)
     }
   }
+ 
 
   const connectGithub = async () => {
     if (!projectId) {
@@ -2242,6 +2285,62 @@ function GitHubCIPage({
 
   const refreshGithub = async () => {
     await loadGithubState(projectId)
+  }
+
+  const scanRepository = async () => {
+    if (!projectId || !githubConnection.connected) {
+      setGithubScanError(
+        'Connect a GitHub repository before scanning it.',
+      )
+      return null
+    }
+
+    setGithubScanning(true)
+    setGithubScanError('')
+
+    try {
+      const data = await apiFetch(
+        '/github/repository/scan/',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            project_id: projectId,
+          }),
+        },
+      )
+
+      setGithubScan(data || null)
+
+      if (data?.contract?.found && data.contract.path) {
+        setSpecPath(data.contract.path)
+      }
+
+      setValidation({
+        ok: Boolean(
+          data?.contract?.found ||
+          data?.framework?.detected,
+        ),
+        message:
+          data?.contract?.found && data?.framework?.detected
+            ? `Repository scan complete. Found ${data.contract.path} and detected ${data.framework.name}.`
+            : data?.contract?.found
+              ? `Repository scan complete. Found ${data.contract.path}.`
+              : data?.framework?.detected
+                ? `Repository scan complete. Detected ${data.framework.name}, but no standard OpenAPI contract file was found.`
+                : 'Repository scan complete, but automatic contract/framework detection was inconclusive.',
+      })
+
+      return data
+    } catch (error) {
+      setGithubScan(null)
+      setGithubScanError(
+        error.message ||
+          'Unable to scan the selected GitHub repository.',
+      )
+      return null
+    } finally {
+      setGithubScanning(false)
+    }
   }
 
   const connectRepository = async () => {
@@ -2285,8 +2384,10 @@ function GitHubCIPage({
         ok: true,
         message:
           `${connectedRepository} is now connected. ` +
-          'Continue with the one-time CI setup below.',
+          'Scanning the repository for its API contract and backend framework…',
       })
+
+      await scanRepository()
     } catch (error) {
       setGithubError(
         error.message ||
@@ -2513,11 +2614,16 @@ jobs:
     },
     {
       number: 3,
+      title: 'Scan repository',
+      done: scanComplete,
+    },
+    {
+      number: 4,
       title: 'Enable CI',
       done: ciActive,
     },
     {
-      number: 4,
+      number: 5,
       title: 'Monitor PRs',
       done: ciActive,
     },
@@ -2695,8 +2801,9 @@ jobs:
             {repositoryInfo?.fullName || 'Repository'} is connected
           </h3>
           <p>
-            The GitHub App connection is working. One-time CI setup is the
-            remaining manual step in this version of API Analyzer.
+            The GitHub App connection is working. API Analyzer will now scan
+            the repository to discover the API contract and backend framework
+            before CI setup.
           </p>
 
           <div className="github-connected-summary">
@@ -2707,6 +2814,14 @@ jobs:
             <span>
               <strong>Repository</strong>{' '}
               {repositoryInfo?.fullName || '—'}
+            </span>
+            <span>
+              <strong>Scan</strong>{' '}
+              {githubScanning
+                ? 'In progress…'
+                : githubScan
+                  ? 'Complete'
+                  : 'Not run'}
             </span>
           </div>
 
@@ -2855,14 +2970,153 @@ jobs:
           </section>
 
           {integrationConnected && (
+            <section className="panel github-ci-card github-scan-card">
+              <div className="section-title">
+                <div>
+                  <span className="github-ci-kicker">
+                    STEP 3 · REPOSITORY SCAN
+                  </span>
+                  <h3>Detect your API contract automatically</h3>
+                  <p>
+                    API Analyzer reads the selected repository and identifies
+                    an existing OpenAPI/Swagger contract and the backend
+                    framework. The scan is read-only.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={scanRepository}
+                  disabled={githubScanning || githubLoading}
+                >
+                  <IconRefresh
+                    className={githubScanning ? 'spin' : ''}
+                  />
+                  {githubScanning
+                    ? 'Scanning…'
+                    : githubScan
+                      ? 'Scan again'
+                      : 'Scan repository'}
+                </button>
+              </div>
+
+              {githubScanError && (
+                <div className="notice notice-error github-ci-callout">
+                  <span className="notice-icon">
+                    <IconAlertCircle />
+                  </span>
+                  <span className="notice-body">
+                    {githubScanError}
+                  </span>
+                </div>
+              )}
+
+              {githubScanning && (
+                <div className="state-placeholder github-scan-loading">
+                  <IconRefresh className="spin large-spinner" />
+                  <p>
+                    Inspecting repository files for OpenAPI/Swagger and
+                    framework signals…
+                  </p>
+                </div>
+              )}
+
+              {!githubScanning && githubScan && (
+                <div className="github-scan-result">
+                  <div className="github-scan-result-grid">
+                    <div>
+                      <small>Contract</small>
+                      <strong>
+                        {githubScan.contract?.found
+                          ? githubScan.contract.path
+                          : 'Not detected'}
+                      </strong>
+                      <span>
+                        {githubScan.contract?.found
+                          ? `${githubScan.contract.type || 'API contract'} · ${githubScan.contract.confidence || 'detected'}`
+                          : 'Use Advanced / manual setup to configure another source.'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <small>Backend framework</small>
+                      <strong>
+                        {githubScan.framework?.detected
+                          ? githubScan.framework.name
+                          : 'Not determined'}
+                      </strong>
+                      <span>
+                        {githubScan.framework?.detected
+                          ? `${githubScan.framework.language || 'Detected'} · ${githubScan.framework.confidence || 'detected'}`
+                          : 'The repository needs manual adapter configuration.'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <small>Default branch</small>
+                      <strong>
+                        {githubScan.default_branch ||
+                          selectedProject?.default_branch ||
+                          'main'}
+                      </strong>
+                      <span>
+                        {githubScan.scanned_files || 0} repository files inspected
+                      </span>
+                    </div>
+                  </div>
+
+                  {githubScan.warnings?.length > 0 && (
+                    <div className="github-scan-warnings">
+                      {githubScan.warnings.map((warning) => (
+                        <div
+                          className="notice notice-warning github-ci-callout"
+                          key={warning}
+                        >
+                          <span className="notice-icon">
+                            <IconAlertCircle />
+                          </span>
+                          <span className="notice-body">
+                            {warning}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {githubScan.contract?.found &&
+                    githubScan.framework?.detected && (
+                      <div className="github-scan-ready">
+                        <div className="github-ci-ready-icon">
+                          <IconCheck />
+                        </div>
+                        <div>
+                          <strong>
+                            Repository is ready for automated setup
+                          </strong>
+                          <p>
+                            API Analyzer found{' '}
+                            <code>{githubScan.contract.path}</code> and detected{' '}
+                            {githubScan.framework.name}. The next setup step can
+                            use this detected configuration.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {integrationConnected && (
             <section className="panel github-ci-card github-simple-setup-card">
               <div className="section-title">
                 <div>
-                  <h3>2. Finish the one-time CI setup</h3>
+                  <h3>4. Finish the one-time CI setup</h3>
                   <p>
-                    For this deployment, this is the only part that still
-                    needs to be done in GitHub. After it is configured, every
-                    PR can be checked automatically.
+                    Once the repository has been scanned, configure the
+                    GitHub Actions integration. After it is active, every PR
+                    can be checked automatically.
                   </p>
                 </div>
 
@@ -3565,14 +3819,18 @@ jobs:
               </div>
               <div>
                 <span>02</span>
-                <strong>GitHub Action runs</strong>
+                <strong>API contract is discovered</strong>
               </div>
               <div>
                 <span>03</span>
-                <strong>API Analyzer compares contracts</strong>
+                <strong>GitHub Action runs</strong>
               </div>
               <div>
                 <span>04</span>
+                <strong>API Analyzer compares contracts</strong>
+              </div>
+              <div>
+                <span>05</span>
                 <strong>PASS / WARN / FAIL appears</strong>
               </div>
             </div>
