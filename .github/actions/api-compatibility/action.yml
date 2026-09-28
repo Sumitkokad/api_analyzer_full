@@ -402,9 +402,49 @@ runs:
 
         print(json.dumps(payload))
         PY
-
     # ============================================================
-    # 11. Submit CI analysis
+    # 11. Wake/check API Analyzer backend
+    # ============================================================
+
+    - name: Wake/check API Analyzer backend
+      shell: bash
+      env:
+        API_BASE_URL: ${{ inputs.api-base-url }}
+      run: |
+        set -euo pipefail
+
+        HEALTH_URL="${API_BASE_URL%/}/api/health/"
+        echo "Checking API Analyzer backend: $HEALTH_URL"
+
+        for attempt in {1..10}; do
+          HTTP_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request GET \
+              --connect-timeout 10 \
+              --max-time 30 \
+              "$HEALTH_URL" || true
+          )"
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "API Analyzer backend is healthy."
+            exit 0
+          fi
+
+          echo "Health check attempt $attempt/10 failed with HTTP $HTTP_CODE."
+
+          if [[ "$attempt" -lt 10 ]]; then
+            sleep 5
+          fi
+        done
+
+        echo "::error::API Analyzer backend did not become healthy."
+        exit 1
+    # ============================================================
+    # 12. Submit CI analysis
     # ============================================================
 
     - name: Submit CI analysis
@@ -417,27 +457,43 @@ runs:
         set -euo pipefail
 
         RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-submit.json"
+        MAX_SUBMIT_ATTEMPTS=4
+        SUBMIT_RETRY_DELAY=5
 
-        HTTP_CODE="$(
-          curl \
-            --silent \
-            --show-error \
-            --output "$RESPONSE_FILE" \
-            --write-out "%{http_code}" \
-            --request POST \
-            --header "Authorization: Bearer $TOKEN" \
-            --header "Content-Type: application/json" \
-            --data @"$RUNNER_TEMP/api-analyzer-payload.json" \
-            "${API_BASE_URL%/}/api/ci/analyze"
-        )"
+        for attempt in $(seq 1 "$MAX_SUBMIT_ATTEMPTS"); do
+          HTTP_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output "$RESPONSE_FILE" \
+              --write-out "%{http_code}" \
+              --request POST \
+              --connect-timeout 10 \
+              --max-time 60 \
+              --header "Authorization: Bearer $TOKEN" \
+              --header "Content-Type: application/json" \
+              --data @"$RUNNER_TEMP/api-analyzer-payload.json" \
+              "${API_BASE_URL%/}/api/ci/analyze" || true
+          )"
 
-        echo "HTTP status: $HTTP_CODE"
+          echo "Submission attempt $attempt/$MAX_SUBMIT_ATTEMPTS returned HTTP $HTTP_CODE"
 
-        if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "202" ]]; then
-          echo "::error::API Analyzer submission failed with HTTP $HTTP_CODE"
-          cat "$RESPONSE_FILE"
+          if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "202" ]]; then
+            break
+          fi
+
+          if [[ "$HTTP_CODE" == "429" || "$HTTP_CODE" =~ ^5[0-9][0-9]$ || -z "$HTTP_CODE" || "$HTTP_CODE" == "000" ]]; then
+            if [[ "$attempt" -lt "$MAX_SUBMIT_ATTEMPTS" ]]; then
+              echo "Transient analyzer submission failure. Retrying in ${SUBMIT_RETRY_DELAY}s..."
+              sleep "$SUBMIT_RETRY_DELAY"
+              continue
+            fi
+          fi
+
+          echo "::error::API Analyzer submission failed with HTTP ${HTTP_CODE:-unknown}"
+          cat "$RESPONSE_FILE" 2>/dev/null || true
           exit 1
-        fi
+        done
 
         COMPARISON_ID="$(jq -r '.comparison_id // empty' "$RESPONSE_FILE")"
         JOB_ID="$(jq -r '.job_id // empty' "$RESPONSE_FILE")"
@@ -483,9 +539,8 @@ runs:
             ;;
         esac
 
-
     # ============================================================
-    # 12. Poll only if analysis is not already terminal
+    # 13. Poll only if analysis is not already terminal
     # ============================================================
 
     - name: Poll analysis status
@@ -501,17 +556,52 @@ runs:
         set -euo pipefail
 
         START_TIME="$(date +%s)"
+        STATUS_RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-status.json"
+
+        # Retry only transient transport/server failures.
+        # Authentication/configuration errors fail immediately.
+        MAX_STATUS_RETRIES=6
+        STATUS_RETRY_DELAY=5
+        CONSECUTIVE_STATUS_FAILURES=0
 
         while true; do
-          RESPONSE="$(
+          HTTP_CODE="$(
             curl \
               --silent \
               --show-error \
-              --fail \
+              --output "$STATUS_RESPONSE_FILE" \
+              --write-out "%{http_code}" \
               --request GET \
+              --connect-timeout 10 \
+              --max-time 30 \
               --header "Authorization: Bearer $TOKEN" \
-              "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/"
+              "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/" || true
           )"
+
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            CONSECUTIVE_STATUS_FAILURES=0
+          else
+            if [[ "$HTTP_CODE" == "429" || "$HTTP_CODE" =~ ^5[0-9][0-9]$ || -z "$HTTP_CODE" || "$HTTP_CODE" == "000" ]]; then
+              CONSECUTIVE_STATUS_FAILURES=$((CONSECUTIVE_STATUS_FAILURES + 1))
+
+              echo "Transient status-check failure: HTTP ${HTTP_CODE:-unknown} (attempt ${CONSECUTIVE_STATUS_FAILURES}/${MAX_STATUS_RETRIES})"
+
+              if (( CONSECUTIVE_STATUS_FAILURES < MAX_STATUS_RETRIES )); then
+                sleep "$STATUS_RETRY_DELAY"
+                continue
+              fi
+
+              echo "::error::API Analyzer status endpoint remained unavailable after ${MAX_STATUS_RETRIES} consecutive attempts."
+              cat "$STATUS_RESPONSE_FILE" 2>/dev/null || true
+              exit 1
+            fi
+
+            echo "::error::API Analyzer status check failed with HTTP $HTTP_CODE."
+            cat "$STATUS_RESPONSE_FILE" 2>/dev/null || true
+            exit 1
+          fi
+
+          RESPONSE="$(cat "$STATUS_RESPONSE_FILE")"
 
           STATUS="$(echo "$RESPONSE" | jq -r '.status // ""')"
           GATE_STATUS="$(echo "$RESPONSE" | jq -r '.gate_status // ""')"
@@ -545,9 +635,8 @@ runs:
           sleep "$POLL_INTERVAL"
         done
 
-
     # ============================================================
-    # 13. Evaluate CI gate
+    # 14. Evaluate CI gate
     # ============================================================
 
     - name: Evaluate CI gate
@@ -599,7 +688,7 @@ runs:
 
 
     # ============================================================
-    # 14. Cleanup worktrees
+    # 15. Cleanup worktrees
     # ============================================================
 
     - name: Cleanup worktrees
