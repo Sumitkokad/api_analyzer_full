@@ -283,6 +283,21 @@ function yamlSingleQuote(value) {
   return `'${String(value || '').replace(/\r?\n/g, ' ').replace(/'/g, "''")}'`
 }
 
+function defaultGithubAnalyzerBaseUrl() {
+  const configured = String(configuredApiBase || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/i, '')
+
+  if (configured) return configured
+
+  if (!isLocalFrontend) {
+    return 'https://api-analyzer-backend.onrender.com'
+  }
+
+  return ''
+}
+
 export default function App() {
   const [session, setSession] = useState(readSession)
   const [route, setRoute] = useState(() => window.location.hash.replace('#/', '') || 'dashboard')
@@ -869,7 +884,6 @@ export default function App() {
             onOpenCompare={() => { window.location.hash = '#/compare' }}
             onSelectComparison={(comp) => {
               setActiveComparison(comp)
-              window.location.hash = '#/dashboard'
             }}
             onRefresh={refreshComparisons}
             apiFetch={apiFetch}
@@ -1169,8 +1183,7 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
 
-  const summary = comparison?.summary || {}
-  const changes = comparison?.changes || []
+  const changes = Array.isArray(comparison?.changes) ? comparison.changes : []
   const counts = useMemo(() => getComparisonCounts(comparison), [comparison])
   const gateStatus = getGateStatus(comparison)
 
@@ -1202,13 +1215,29 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
     })
   }, [changes, filter, search])
 
+  const noSemanticChanges =
+    Boolean(comparison) &&
+    !loading &&
+    changes.length === 0 &&
+    counts.total === 0
+
+  const filtersHideAll =
+    Boolean(comparison) &&
+    !loading &&
+    changes.length > 0 &&
+    filteredChanges.length === 0
+
   return (
     <div className="dashboard-layout">
       <div className="metrics-grid">
         <Metric
           label="Total Contract Changes"
           value={counts.total}
-          sub={`${counts.breaking} breaking · ${counts.potentiallyBreaking} potential · ${counts.nonBreaking} compatible`}
+          sub={
+            counts.total === 0
+              ? 'No semantic changes detected'
+              : `${counts.breaking} breaking · ${counts.potentiallyBreaking} potential · ${counts.nonBreaking} compatible`
+          }
           icon={IconLayers}
         />
         <Metric
@@ -1222,14 +1251,30 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           label="Compatible Updates"
           value={counts.nonBreaking}
           tone="good"
-          sub={counts.potentiallyBreaking ? `${counts.potentiallyBreaking} potential risk item${counts.potentiallyBreaking === 1 ? '' : 's'}` : 'No potential-risk items'}
+          sub={
+            counts.potentiallyBreaking
+              ? `${counts.potentiallyBreaking} potential risk item${counts.potentiallyBreaking === 1 ? '' : 's'}`
+              : 'No potential-risk items'
+          }
           icon={IconShieldCheck}
         />
         <Metric
           label="CI Gate"
           value={comparison ? gateStatus : 'IDLE'}
-          tone={gateStatus === 'FAIL' || gateStatus === 'ERROR' ? 'danger' : gateStatus === 'WARN' ? 'warn' : gateStatus === 'PASS' ? 'good' : undefined}
-          sub={comparison ? (comparison.gate_reason_code || `Comparison #${comparison.id}`) : 'No active comparison'}
+          tone={
+            gateStatus === 'FAIL' || gateStatus === 'ERROR'
+              ? 'danger'
+              : gateStatus === 'WARN'
+                ? 'warn'
+                : gateStatus === 'PASS'
+                  ? 'good'
+                  : undefined
+          }
+          sub={
+            comparison
+              ? comparison.gate_reason_code || `Comparison #${comparison.id}`
+              : 'No active comparison'
+          }
           icon={IconCpu}
         />
       </div>
@@ -1247,14 +1292,20 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           <div>
             <span>Revision pair</span>
             <strong>
-              {comparison.base_sha ? String(comparison.base_sha).slice(0, 10) : 'base'}
+              {comparison.base_sha
+                ? String(comparison.base_sha).slice(0, 10)
+                : 'base'}
               {' → '}
-              {comparison.head_sha ? String(comparison.head_sha).slice(0, 10) : 'head'}
+              {comparison.head_sha
+                ? String(comparison.head_sha).slice(0, 10)
+                : 'head'}
             </strong>
           </div>
           <div>
             <span>Decision</span>
-            <span className={`badge ${gateBadgeClass(gateStatus)}`}>{gateStatus}</span>
+            <span className={`badge ${gateBadgeClass(gateStatus)}`}>
+              {gateStatus}
+            </span>
           </div>
         </div>
       )}
@@ -1266,7 +1317,11 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
               <h2>Pipeline Workflow Guide</h2>
               <p>Step-by-step lifecycle of an API compatibility audit.</p>
             </div>
-            <button type="button" className="text-action-btn" onClick={onOpenVideo}>
+            <button
+              type="button"
+              className="text-action-btn"
+              onClick={onOpenVideo}
+            >
               <IconPlayCircle /> Open Product Demo
             </button>
           </div>
@@ -1284,7 +1339,11 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
                   : 'Run your first comparison to view classified diffs.'}
               </p>
             </div>
-            <button type="button" className="primary small-btn" onClick={onOpenCompare}>
+            <button
+              type="button"
+              className="primary small-btn"
+              onClick={onOpenCompare}
+            >
               <IconPlus /> Run New
             </button>
           </div>
@@ -1297,48 +1356,109 @@ function Dashboard({ comparison, loading, onOpenCompare, onOpenVideo }) {
           )}
 
           {!comparison && !loading && (
-            <EmptyState onOpenCompare={onOpenCompare} onOpenVideo={onOpenVideo} />
+            <EmptyState
+              onOpenCompare={onOpenCompare}
+              onOpenVideo={onOpenVideo}
+            />
           )}
 
           {comparison && !loading && (
             <div className="changes-browser">
               {counts.unknown > 0 && (
                 <div className="notice notice-warning classification-warning">
-                  <span className="notice-icon"><IconAlertCircle /></span>
+                  <span className="notice-icon">
+                    <IconAlertCircle />
+                  </span>
                   <span className="notice-body">
-                    {counts.unknown} change{counts.unknown === 1 ? '' : 's'} could not be mapped to a known compatibility class. Treating these as unclassified instead of silently calling them safe.
+                    {counts.unknown} change
+                    {counts.unknown === 1 ? '' : 's'} could not be mapped to a
+                    known compatibility class. Treating these as unclassified
+                    instead of silently calling them safe.
                   </span>
                 </div>
               )}
 
-              <div className="filter-toolbar">
-                <div className="filter-tabs">
-                  <button type="button" className={`filter-tab ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
-                    All ({changes.length})
-                  </button>
-                  <button type="button" className={`filter-tab tab-breaking ${filter === 'breaking' ? 'active' : ''}`} onClick={() => setFilter('breaking')}>
-                    Breaking ({counts.breaking})
-                  </button>
-                  <button type="button" className={`filter-tab tab-potential ${filter === 'potentially-breaking' ? 'active' : ''}`} onClick={() => setFilter('potentially-breaking')}>
-                    Potential ({counts.potentiallyBreaking})
-                  </button>
-                  <button type="button" className={`filter-tab tab-safe ${filter === 'non-breaking' ? 'active' : ''}`} onClick={() => setFilter('non-breaking')}>
-                    Compatible ({counts.nonBreaking})
-                  </button>
+              {noSemanticChanges ? (
+                <div className="no-contract-changes">
+                  <div className="no-contract-changes-icon">
+                    <IconShieldCheck />
+                  </div>
+                  <span className="badge badge-safe">NO BREAKING CHANGES</span>
+                  <h3>No semantic contract changes detected</h3>
+                  <p>
+                    The base and head OpenAPI specifications contain no
+                    structural API differences for this comparison. This is a
+                    valid successful CI result, not an empty or failed audit.
+                  </p>
+                  {comparison.gate_reason_code && (
+                    <code>{comparison.gate_reason_code}</code>
+                  )}
                 </div>
+              ) : (
+                <>
+                  <div className="filter-toolbar">
+                    <div className="filter-tabs">
+                      <button
+                        type="button"
+                        className={`filter-tab ${filter === 'all' ? 'active' : ''}`}
+                        onClick={() => setFilter('all')}
+                      >
+                        All ({changes.length})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-breaking ${
+                          filter === 'breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('breaking')}
+                      >
+                        Breaking ({counts.breaking})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-potential ${
+                          filter === 'potentially-breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('potentially-breaking')}
+                      >
+                        Potential ({counts.potentiallyBreaking})
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-tab tab-safe ${
+                          filter === 'non-breaking' ? 'active' : ''
+                        }`}
+                        onClick={() => setFilter('non-breaking')}
+                      >
+                        Compatible ({counts.nonBreaking})
+                      </button>
+                    </div>
 
-                <div className="filter-search-box">
-                  <IconSearch />
-                  <input
-                    type="search"
-                    placeholder="Search endpoint, field or rule…"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
-              </div>
+                    <div className="filter-search-box">
+                      <IconSearch />
+                      <input
+                        type="search"
+                        placeholder="Search endpoint, field or rule…"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                      />
+                    </div>
+                  </div>
 
-              <ChangeList changes={filteredChanges} />
+                  {filtersHideAll ? (
+                    <div className="filtered-empty-state">
+                      <IconSearch />
+                      <strong>No changes match this filter</strong>
+                      <p>
+                        Try the All tab or clear the search field to see the
+                        stored semantic changes.
+                      </p>
+                    </div>
+                  ) : (
+                    <ChangeList changes={filteredChanges} />
+                  )}
+                </>
+              )}
             </div>
           )}
         </section>
@@ -1429,12 +1549,12 @@ function EmptyState({ onOpenCompare, onOpenVideo }) {
   )
 }
 
-function ChangeList({ changes }) {
+function ChangeList({ changes, emptyMessage = 'No changes to display.' }) {
   if (!changes.length) {
     return (
       <div className="empty-changes">
         <IconShieldCheck />
-        <p>No changes match the selected filter criteria.</p>
+        <p>{emptyMessage}</p>
       </div>
     )
   }
@@ -1449,30 +1569,70 @@ function ChangeList({ changes }) {
         const flags = Array.isArray(change.flags) ? change.flags : []
 
         return (
-          <article key={change.id || change.stable_hash || index} className={`change-item ${itemClass}`}>
+          <article
+            key={change.id || change.stable_hash || index}
+            className={`change-item ${itemClass}`}
+          >
             <div className="change-heading">
               <div className="change-title-group">
-                <span className="change-index">#{String(index + 1).padStart(2, '0')}</span>
-                <span className="change-endpoint">{change.endpoint || '/'}</span>
-                <span className={`badge ${badgeClass}`}>{compatibilityLabel(classification)}</span>
+                <span className="change-index">
+                  #{String(index + 1).padStart(2, '0')}
+                </span>
+                <span className="change-endpoint">
+                  {change.endpoint || '/'}
+                </span>
+                <span className={`badge ${badgeClass}`}>
+                  {compatibilityLabel(classification)}
+                </span>
               </div>
-              <span className="change-category">{change.change_type || 'Contract Diff'}</span>
+              <span className="change-category">
+                {change.change_type || 'Contract Diff'}
+              </span>
             </div>
 
             <div className="change-meta">
-              <strong>Target:</strong> {change.parameter || change.schema_path || 'Endpoint root definition'}
+              <strong>Target:</strong>{' '}
+              {change.parameter ||
+                change.schema_path ||
+                'Endpoint root definition'}
             </div>
 
             <div className="change-signals">
-              {change.method && <span className="change-signal">{String(change.method).toUpperCase()}</span>}
-              {change.direction && change.direction !== 'unknown' && <span className="change-signal">{change.direction}</span>}
-              {change.relation && <span className="change-signal">relation: {change.relation}</span>}
-              {change.rule_id && <span className="change-signal change-signal-mono">rule: {change.rule_id}</span>}
-              {change.severity && <span className="change-signal">severity: {change.severity}</span>}
-              {flags.map((flag) => <span key={flag} className="change-signal change-signal-flag">{flag}</span>)}
+              {change.method && (
+                <span className="change-signal">
+                  {String(change.method).toUpperCase()}
+                </span>
+              )}
+              {change.direction && change.direction !== 'unknown' && (
+                <span className="change-signal">{change.direction}</span>
+              )}
+              {change.relation && (
+                <span className="change-signal">
+                  relation: {change.relation}
+                </span>
+              )}
+              {change.rule_id && (
+                <span className="change-signal change-signal-mono">
+                  rule: {change.rule_id}
+                </span>
+              )}
+              {change.severity && (
+                <span className="change-signal">
+                  severity: {change.severity}
+                </span>
+              )}
+              {flags.map((flag) => (
+                <span
+                  key={flag}
+                  className="change-signal change-signal-flag"
+                >
+                  {flag}
+                </span>
+              ))}
             </div>
 
-            {(change.old_value !== undefined || change.new_value !== undefined) && (
+            {(change.old_value !== undefined ||
+              change.new_value !== undefined) && (
               <div className="diff-block">
                 {change.old_value !== undefined && (
                   <div className="diff-row removed">
@@ -1490,21 +1650,31 @@ function ChangeList({ changes }) {
             )}
 
             {change.llm_analysis && (
-              <ImpactBox analysis={change.llm_analysis} classification={classification} />
+              <ImpactBox
+                analysis={change.llm_analysis}
+                classification={classification}
+              />
             )}
 
             {evidence.length > 0 && (
               <details className="evidence-toggle">
-                <summary>Supporting Evidence ({evidence.length})</summary>
+                <summary>
+                  Supporting Evidence ({evidence.length})
+                </summary>
                 <div className="evidence-content">
                   {evidence.map((item, idx) => (
                     <div key={idx} className="evidence-item">
                       <div className="evidence-item-meta">
-                        <span>{item.source_type || item.source || 'spec'}</span>
+                        <span>
+                          {item.source_type || item.source || 'spec'}
+                        </span>
                         <span>{item.retrieval || 'exact'}</span>
                         {item.location && <span>{item.location}</span>}
                       </div>
-                      <pre>{item.excerpt || JSON.stringify(item, null, 2)}</pre>
+                      <pre>
+                        {item.excerpt ||
+                          JSON.stringify(item, null, 2)}
+                      </pre>
                     </div>
                   ))}
                 </div>
@@ -1659,10 +1829,8 @@ function GitHubCIPage({
   )
 
   const connectedRuns = useMemo(() => {
-    const projectMatches = comparisons.filter(
-      (comparison) =>
-        String(comparison.project) === String(projectId),
-    )
+    const normalizedRepo =
+      repositoryInfo?.fullName?.toLowerCase()
 
     const normalizedRepo = repository.trim().toLowerCase()
 
@@ -1688,6 +1856,53 @@ function GitHubCIPage({
       })
   }, [comparisons, projectId, repository])
 
+  const selectedRun = useMemo(
+    () =>
+      connectedRuns.find(
+        (comparison) =>
+          String(comparison.id) === String(selectedRunId),
+      ) || null,
+    [connectedRuns, selectedRunId],
+  )
+
+  useEffect(() => {
+    if (
+      selectedRunId &&
+      !connectedRuns.some(
+        (comparison) =>
+          String(comparison.id) === String(selectedRunId),
+      )
+    ) {
+      setSelectedRunId('')
+    }
+  }, [connectedRuns, selectedRunId])
+
+  useEffect(() => {
+    if (!onRefresh) return undefined
+
+    const refresh = () => onRefresh()
+    refresh()
+
+    const timer = window.setInterval(refresh, 10000)
+
+    const handleFocus = () => refresh()
+    const handleVisibility = () => {
+      if (!document.hidden) refresh()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener(
+        'visibilitychange',
+        handleVisibility,
+      )
+    }
+  }, [onRefresh])
+
   const activeRunExists = connectedRuns.some((comparison) => {
     const status = String(
       comparison.status || '',
@@ -1696,16 +1911,151 @@ function GitHubCIPage({
     return status === 'queued' || status === 'running'
   })
 
+
   useEffect(() => {
-    if (!activeRunExists || !onRefresh) return undefined
+    if (!onRefresh) return undefined
+
+    // Keep the GitHub CI tracker live even when the page was opened
+    // before GitHub Actions created a comparison. Previously polling
+    // started only after an active run was already present, so a page
+    // showing 0 runs could remain stale forever.
+    const refresh = () => onRefresh()
+
+    refresh()
 
     const timer = window.setInterval(
-      () => onRefresh(),
+      refresh,
       10000,
     )
 
-    return () => window.clearInterval(timer)
-  }, [activeRunExists, onRefresh])
+    const handleFocus = () => refresh()
+
+    const handleVisibility = () => {
+      if (!document.hidden) refresh()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [onRefresh])
+
+  const analyzerUrlValid = /^https:\/\/[^\s]+$/i.test(
+    analyzerBaseUrl.trim(),
+  )
+
+  const localAnalyzerUrl =
+    /https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)([:/]|$)/i.test(
+      analyzerBaseUrl.trim(),
+    )
+
+  const repositoryValid =
+    Boolean(repositoryInfo) &&
+    githubConnection.connected &&
+    Boolean(
+      githubConnection.repository_full_name &&
+        String(githubConnection.repository_full_name).toLowerCase() ===
+          String(repositoryInfo?.fullName || '').toLowerCase(),
+    )
+
+  const specValid = Boolean(specPath.trim())
+  const baselineValid = ['merge-base', 'base'].includes(
+    baselineMode,
+  )
+
+  const integrationConnected =
+    githubConnection.installation_connected && githubConnection.connected
+
+  const ciActive = connectedRuns.length > 0
+
+  const scanComplete = Boolean(githubScan)
+
+  const onboardingStep =
+    !githubConnection.installation_connected
+      ? 1
+      : !githubConnection.connected
+        ? 2
+        : !scanComplete
+          ? 3
+          : !ciActive && !ciToken
+            ? 4
+            : 5
+
+  const validateAnalyzerSetup = async () => {
+    setValidationLoading(true)
+    setValidation(null)
+
+    try {
+      if (!projectId) {
+        throw new Error(
+          'Select an analyzer project before continuing.',
+        )
+      }
+
+      if (!githubConnection.installation_connected) {
+        throw new Error(
+          'Connect the API Analyzer GitHub App first.',
+        )
+      }
+
+      if (!githubConnection.connected) {
+        throw new Error(
+          'Select and connect a GitHub repository first.',
+        )
+      }
+
+      if (!repositoryInfo) {
+        throw new Error(
+          'The connected GitHub repository is invalid.',
+        )
+      }
+
+      if (!analyzerUrlValid || localAnalyzerUrl) {
+        throw new Error(
+          'The GitHub Action needs a public HTTPS analyzer endpoint.',
+        )
+      }
+
+      if (!specValid) {
+        throw new Error(
+          'Tell API Analyzer where the OpenAPI contract lives.',
+        )
+      }
+
+      if (!baselineValid) {
+        throw new Error(
+          'Choose a valid baseline strategy.',
+        )
+      }
+
+      const project = await apiFetch(
+        `/projects/${projectId}/`,
+      )
+
+      setValidation({
+        ok: true,
+        message:
+          `Setup checks passed for ${project?.name || `Project #${projectId}`}. ` +
+          (ciActive
+            ? 'A CI comparison has already been received for this repository.'
+            : 'One-time GitHub Actions configuration is still required.'),
+      })
+    } catch (error) {
+      setValidation({
+        ok: false,
+        message:
+          error.message ||
+          'Unable to validate the GitHub setup.',
+      })
+    } finally {
+      setValidationLoading(false)
+    }
+  }
+ 
 
   const loadGithubState = useCallback(
     async (selectedProjectId) => {
@@ -1829,12 +2179,12 @@ function GitHubCIPage({
     await loadGithubState(projectId)
   }
 
-  const connectRepository = async () => {
-    if (!projectId) {
-      setGithubError(
-        'Select an analyzer project first.',
+  const scanRepository = async () => {
+    if (!projectId || !githubConnection.connected) {
+      setGithubScanError(
+        'Connect a GitHub repository before scanning it.',
       )
-      return
+      return null
     }
 
     if (!repository) {
@@ -1955,12 +2305,329 @@ function GitHubCIPage({
     githubConnection.connected &&
     Boolean(repository)
 
+  const safeBaseUrl =
+    analyzerBaseUrl
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\/api$/i, '') ||
+    defaultGithubAnalyzerBaseUrl()
+
+  const workflowYaml = useMemo(() => {
+    const safeRepo =
+      repositoryInfo?.fullName || 'owner/repository'
+    const safeSpecPath =
+      specPath.trim() || 'openapi.json'
+    const safeGenerateCommand =
+      generateCommand.trim()
+
+    return `name: API Compatibility
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  api-compatibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run API Compatibility Analyzer
+        uses: ${GITHUB_ACTION_REPOSITORY}/.github/actions/api-compatibility@${GITHUB_ACTION_REF}
+        with:
+          api-base-url: ${yamlSingleQuote(
+            safeBaseUrl || 'https://YOUR-ANALYZER-URL',
+          )}
+          project-id: \${{ secrets.API_ANALYZER_PROJECT_ID }}
+          token: \${{ secrets.API_ANALYZER_TOKEN }}
+          spec-path: ${yamlSingleQuote(safeSpecPath)}
+          generate-command: ${yamlSingleQuote(
+            safeGenerateCommand,
+          )}
+          baseline-mode: ${yamlSingleQuote(baselineMode)}
+          fail-on-error: ${yamlSingleQuote(
+            failOnError ? 'true' : 'false',
+          )}
+          poll-timeout-seconds: '600'
+          poll-interval-seconds: '5'
+
+# Repository: ${safeRepo}
+# If fork PR support is required, use a trusted workflow_run/artifact pattern.
+`
+  }, [
+    repositoryInfo,
+    safeBaseUrl,
+    specPath,
+    generateCommand,
+    baselineMode,
+    failOnError,
+  ])
+
+  const progressLabels = [
+    {
+      number: 1,
+      title: 'Connect GitHub',
+      done: githubConnection.installation_connected,
+    },
+    {
+      number: 2,
+      title: 'Select repository',
+      done: githubConnection.connected,
+    },
+    {
+      number: 3,
+      title: 'Scan repository',
+      done: scanComplete,
+    },
+    {
+      number: 4,
+      title: 'Enable CI',
+      done: ciActive,
+    },
+    {
+      number: 5,
+      title: 'Monitor PRs',
+      done: ciActive,
+    },
+  ]
+
+  const renderConnectionState = () => {
+    if (!githubConnection.installation_connected) {
+      return (
+        <div className="github-onboarding-panel">
+          <div className="github-onboarding-icon">
+            <IconGithub />
+          </div>
+
+          <div className="github-onboarding-content">
+            <span className="github-onboarding-eyebrow">
+              STEP 1 · GITHUB
+            </span>
+            <h3>Connect your GitHub account</h3>
+            <p>
+              API Analyzer needs one-time GitHub authorization so it can
+              discover the repositories you choose. You do not need to paste
+              a GitHub token.
+            </p>
+
+            <button
+              type="button"
+              className="primary large-btn"
+              onClick={connectGithub}
+              disabled={githubConnecting || githubLoading || !projectId}
+            >
+              <IconGithub />
+              {githubConnecting
+                ? 'Opening GitHub…'
+                : 'Connect GitHub'}
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    if (!githubConnection.connected) {
+      return (
+        <div className="github-onboarding-panel">
+          <div className="github-onboarding-icon is-ready">
+            <IconCheck />
+          </div>
+
+          <div className="github-onboarding-content">
+            <span className="github-onboarding-eyebrow">
+              STEP 2 · REPOSITORY
+            </span>
+            <h3>Choose the repository to protect</h3>
+            <p>
+              Select one repository from the GitHub App installation. API
+              Analyzer will use this repository as the source for PR checks.
+            </p>
+
+            <div className="github-repository-toolbar">
+              <label className="github-repository-selector">
+                <span>GitHub Repository</span>
+                <select
+                  value={
+                    githubRepositories.some(
+                      (item) =>
+                        String(item.full_name || '').toLowerCase() ===
+                        String(repository || '').toLowerCase(),
+                    )
+                      ? repository
+                      : ''
+                  }
+                  onChange={(event) =>
+                    setRepository(event.target.value)
+                  }
+                  disabled={
+                    githubLoading ||
+                    repositoryConnecting ||
+                    githubRepositories.length === 0
+                  }
+                >
+                  <option value="">
+                    Select a repository
+                  </option>
+
+                  {githubRepositories.map((item) => (
+                    <option
+                      key={item.id || item.full_name}
+                      value={item.full_name}
+                    >
+                      {item.full_name}
+                      {item.private ? ' · private' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="github-repository-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={refreshGithub}
+                  disabled={githubLoading || repositoryConnecting}
+                >
+                  <IconRefresh
+                    className={githubLoading ? 'spin' : ''}
+                  />
+                  {githubLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+
+            {repositoryInfo && (
+              <div className="github-repository-summary">
+                <div>
+                  <small>Repository</small>
+                  <strong>{repositoryInfo.fullName}</strong>
+                </div>
+                <div>
+                  <small>Default branch</small>
+                  <strong>
+                    {selectedGithubRepository?.default_branch ||
+                      githubConnection.metadata?.default_branch ||
+                      selectedProject?.default_branch ||
+                      'main'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Visibility</small>
+                  <strong>
+                    {selectedGithubRepository?.private
+                      ? 'Private'
+                      : 'Public'}
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            <div className="github-app-connection-actions">
+              <button
+                type="button"
+                className="primary large-btn"
+                onClick={connectRepository}
+                disabled={
+                  repositoryConnecting ||
+                  githubLoading ||
+                  !repositoryInfo
+                }
+              >
+                <IconCheck />
+                {repositoryConnecting
+                  ? 'Connecting…'
+                  : 'Continue with repository'}
+              </button>
+
+              <span className="github-inline-help">
+                This links the selected repository to Project #
+                {projectId}.
+              </span>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="github-onboarding-panel is-complete">
+        <div className="github-onboarding-icon is-ready">
+          <IconCheck />
+        </div>
+
+        <div className="github-onboarding-content">
+          <span className="github-onboarding-eyebrow">
+            STEP 2 COMPLETE
+          </span>
+          <h3>
+            {repositoryInfo?.fullName || 'Repository'} is connected
+          </h3>
+          <p>
+            The GitHub App connection is working. API Analyzer will now scan
+            the repository to discover the API contract and backend framework
+            before CI setup.
+          </p>
+
+          <div className="github-connected-summary">
+            <span>
+              <strong>Installation</strong>{' '}
+              {githubConnection.installation_id || 'active'}
+            </span>
+            <span>
+              <strong>Repository</strong>{' '}
+              {repositoryInfo?.fullName || '—'}
+            </span>
+            <span>
+              <strong>Scan</strong>{' '}
+              {githubScanning
+                ? 'In progress…'
+                : githubScan
+                  ? 'Complete'
+                  : 'Not run'}
+            </span>
+          </div>
+
+          <div className="github-app-connection-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={refreshGithub}
+              disabled={githubLoading}
+            >
+              <IconRefresh className={githubLoading ? 'spin' : ''} />
+              Refresh connection
+            </button>
+
+            <button
+              type="button"
+              className="secondary"
+              onClick={disconnectRepository}
+              disabled={repositoryConnecting}
+            >
+              Disconnect repository
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <section className="github-ci-page">
       <div className="github-ci-hero">
         <div>
           <span className="github-ci-kicker">
-            CI / GITHUB ACTIONS
+            CI / GITHUB
           </span>
 
           <h2>Connect your API repository</h2>
@@ -1976,7 +2643,7 @@ function GitHubCIPage({
         <div className="github-ci-hero-actions">
           <span
             className={`badge ${
-              setupReady
+              ciActive
                 ? 'badge-safe'
                 : 'badge-warn'
             }`}
@@ -1998,12 +2665,32 @@ function GitHubCIPage({
 
           <button
             type="button"
-            className="primary"
+            className="secondary"
             onClick={onOpenCompare}
           >
             <IconCompare /> Manual Compare
           </button>
         </div>
+      </div>
+
+      <div className="github-setup-progress">
+        {progressLabels.map((step) => (
+          <div
+            className={`github-progress-step ${
+              step.done
+                ? 'is-done'
+                : step.number === onboardingStep
+                  ? 'is-current'
+                  : ''
+            }`}
+            key={step.number}
+          >
+            <span>
+              {step.done ? <IconCheck /> : step.number}
+            </span>
+            <strong>{step.title}</strong>
+          </div>
+        ))}
       </div>
 
       <div className="github-ci-layout">
@@ -2337,6 +3024,11 @@ function GitHubCIPage({
                     <IconCheck />
                   </div>
 
+              {ciActive ? (
+                <div className="github-ci-ready-banner">
+                  <div className="github-ci-ready-icon">
+                    <IconCheck />
+                  </div>
                   <div>
                     <strong>
                       Setup pull request created
@@ -2375,7 +3067,6 @@ function GitHubCIPage({
                   repository.
                 </p>
               </div>
-
               <span className="status-pill">
                 {connectedRuns.length} runs
               </span>
@@ -2386,9 +3077,8 @@ function GitHubCIPage({
                 <span className="notice-icon">
                   <IconRefresh className="spin" />
                 </span>
-
                 <span className="notice-body">
-                  An active run is being refreshed every 10 seconds.
+                  A CI run is in progress. Results refresh automatically.
                 </span>
               </div>
             )}
@@ -2402,34 +3092,60 @@ function GitHubCIPage({
                     const counts =
                       getComparisonCounts(comparison)
 
-                    const repo =
-                      comparison.repository ||
-                      'unknown repository'
-
-                    const prLabel =
-                      comparison.pull_request_number
-                        ? `PR #${comparison.pull_request_number}`
-                        : `Comparison #${comparison.id}`
-
-                    return (
-                      <article
-                        className="github-ci-run-row"
-                        key={comparison.id}
+                  return (
+                    <article
+                      className="github-ci-run-row"
+                      key={comparison.id}
+                    >
+                      <div
+                        className={`github-ci-run-status ${
+                          gate === 'PASS'
+                            ? 'is-pass'
+                            : gate === 'WARN'
+                              ? 'is-warn'
+                              : gate === 'FAIL' ||
+                                  gate === 'ERROR'
+                                ? 'is-fail'
+                                : 'is-pending'
+                        }`}
                       >
-                        <div
-                          className={`github-ci-run-status ${
-                            gate === 'PASS'
-                              ? 'is-pass'
-                              : gate === 'WARN'
-                                ? 'is-warn'
-                                : gate === 'FAIL' ||
-                                    gate === 'ERROR'
-                                  ? 'is-fail'
-                                  : 'is-pending'
-                          }`}
+                        {gate}
+                      </div>
+
+                      <div className="github-ci-run-main">
+                        <strong>{prLabel}</strong>
+                        <small>
+                          {comparison.repository ||
+                            'unknown repository'}
+                        </small>
+                        <small>
+                          {comparison.base_sha
+                            ? String(
+                                comparison.base_sha,
+                              ).slice(0, 10)
+                            : 'base'}
+                          {' → '}
+                          {comparison.head_sha
+                            ? String(
+                                comparison.head_sha,
+                              ).slice(0, 10)
+                            : 'head'}
+                        </small>
+                        <small>
+                          {counts.breaking} breaking ·{' '}
+                          {counts.potentiallyBreaking} potential ·{' '}
+                          {counts.nonBreaking} compatible
+                        </small>
+                      </div>
+
+                      <div className="github-ci-run-actions">
+                        <span
+                          className={`badge ${gateBadgeClass(
+                            gate,
+                          )}`}
                         >
                           {gate}
-                        </div>
+                        </span>
 
                         <div className="github-ci-run-main">
                           <strong>{prLabel}</strong>
@@ -2496,6 +3212,131 @@ function GitHubCIPage({
               </div>
             )}
           </section>
+
+          {selectedRun && (
+            <section className="panel github-ci-card github-run-detail-card">
+              <div className="section-title">
+                <div>
+                  <span className="github-ci-kicker">
+                    CI RESULT
+                  </span>
+                  <h3>
+                    {selectedRun.pull_request_number
+                      ? `Pull Request #${selectedRun.pull_request_number}`
+                      : `Comparison #${selectedRun.id}`}
+                  </h3>
+                  <p>
+                    {selectedRun.repository ||
+                      'Repository not available'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setSelectedRunId('')}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="github-run-result-hero">
+                <div
+                  className={`github-run-result-status ${getGateStatus(
+                    selectedRun,
+                  ) === 'PASS'
+                    ? 'is-pass'
+                    : getGateStatus(selectedRun) === 'WARN'
+                      ? 'is-warn'
+                      : getGateStatus(selectedRun) === 'FAIL' ||
+                          getGateStatus(selectedRun) === 'ERROR'
+                        ? 'is-fail'
+                        : 'is-pending'
+                  }`}
+                >
+                  {getGateStatus(selectedRun)}
+                </div>
+
+                <div>
+                  <strong>
+                    {gateDescription(selectedRun)}
+                  </strong>
+                  <span>
+                    Comparison #{selectedRun.id}
+                  </span>
+                </div>
+              </div>
+
+              <div className="github-run-detail-grid">
+                <div>
+                  <small>Base revision</small>
+                  <strong>
+                    {selectedRun.base_sha || '—'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Head revision</small>
+                  <strong>
+                    {selectedRun.head_sha || '—'}
+                  </strong>
+                </div>
+                <div>
+                  <small>Breaking</small>
+                  <strong>
+                    {getComparisonCounts(selectedRun).breaking}
+                  </strong>
+                </div>
+                <div>
+                  <small>Total changes</small>
+                  <strong>
+                    {getComparisonCounts(selectedRun).total}
+                  </strong>
+                </div>
+              </div>
+
+              {getComparisonCounts(selectedRun).total === 0 ? (
+                <div className="no-contract-changes compact">
+                  <div className="no-contract-changes-icon">
+                    <IconShieldCheck />
+                  </div>
+                  <h4>No semantic contract changes</h4>
+                  <p>
+                    The base and head contracts are structurally equivalent
+                    for this CI comparison.
+                  </p>
+                </div>
+              ) : (
+                <ChangeList
+                  changes={Array.isArray(selectedRun.changes)
+                    ? selectedRun.changes
+                    : []}
+                />
+              )}
+
+              <div className="github-run-detail-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => {
+                    onSelectComparison(selectedRun)
+                    window.location.hash = '#/dashboard'
+                  }}
+                >
+                  <IconLayers /> Open full report
+                </button>
+
+                {repositoryInfo && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={openGithub}
+                  >
+                    <IconGithub /> Open repository
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
 
           <section className="panel github-ci-card">
             <div className="section-title">
