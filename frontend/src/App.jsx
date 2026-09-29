@@ -2249,6 +2249,10 @@ function GitHubCIPage({
     githubConnection.connected &&
     repositoryMatchesConnection
 
+  const setupAlreadyExists = Boolean(
+    setupResult?.setup?.pull_request_url,
+  )
+
   return (
     <section className="github-ci-page">
       <div className="github-ci-hero">
@@ -2617,9 +2621,6 @@ function GitHubCIPage({
                   </div>
                 </div>
               </div>
-
-              const setupAlreadyExists =
-                Boolean(setupResult?.setup?.pull_request_url)
 
               <button
                 type="button"
