@@ -15,11 +15,61 @@ inputs:
     required: true
 
   spec-path:
-    description: Path to the OpenAPI JSON specification.
+    description: Path to the OpenAPI JSON or YAML specification.
     required: true
 
   generate-command:
-    description: Command used to generate the OpenAPI specification.
+    description: Command used to generate the OpenAPI specification. Leave empty when the contract is committed or otherwise already present.
+    required: false
+    default: ""
+
+  contract-source:
+    description: "Contract acquisition mode: auto, committed_file, or generated."
+    required: false
+    default: auto
+
+  language:
+    description: Repository language/runtime supplied by the adapter (for example Python, Node.js, Java, or C#).
+    required: false
+    default: ""
+
+  package-manager:
+    description: Repository package manager supplied by the adapter (for example pip, npm, pnpm, yarn, maven, gradle, or dotnet).
+    required: false
+    default: ""
+
+  dependency-files:
+    description: Newline-delimited dependency/manifest files supplied by the adapter.
+    required: false
+    default: ""
+
+  working-directory:
+    description: Repository-relative working directory used for dependency installation and contract generation.
+    required: false
+    default: ""
+
+  install-command:
+    description: Framework-neutral dependency installation command supplied by the adapter.
+    required: false
+    default: ""
+
+  environment:
+    description: Optional newline-delimited KEY=VALUE environment entries required by contract generation.
+    required: false
+    default: ""
+
+  adapter-name:
+    description: Adapter identifier recorded in the CI submission payload.
+    required: false
+    default: customer-action
+
+  adapter-version:
+    description: Adapter version recorded in the CI submission payload.
+    required: false
+    default: "1"
+
+  generator-warnings:
+    description: Optional newline-delimited warnings produced while acquiring the contract.
     required: false
     default: ""
 
@@ -123,6 +173,17 @@ runs:
         PROJECT_ID: ${{ inputs.project-id }}
         API_BASE_URL: ${{ inputs.api-base-url }}
         SPEC_PATH: ${{ inputs.spec-path }}
+        GENERATE_COMMAND_INPUT: ${{ inputs.generate-command }}
+        CONTRACT_SOURCE_INPUT: ${{ inputs.contract-source }}
+        LANGUAGE: ${{ inputs.language }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+        DEPENDENCY_FILES_INPUT: ${{ inputs.dependency-files }}
+        WORKING_DIRECTORY_INPUT: ${{ inputs.working-directory }}
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+        ADAPTER_NAME: ${{ inputs.adapter-name }}
+        ADAPTER_VERSION: ${{ inputs.adapter-version }}
+        GENERATOR_WARNINGS_INPUT: ${{ inputs.generator-warnings }}
+        ENVIRONMENT_INPUT: ${{ inputs.environment }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
         TIMEOUT_SECONDS: ${{ inputs.poll-timeout-seconds }}
         POLL_INTERVAL: ${{ inputs.poll-interval-seconds }}
@@ -168,6 +229,90 @@ runs:
           echo "::error::OpenAPI specification path is empty."
           exit 1
         fi
+
+        if [[ "$SPEC_PATH" = /* || "$SPEC_PATH" == *".."* ]]; then
+          echo "::error::spec-path must be a repository-relative path without '..'."
+          exit 1
+        fi
+
+        case "${CONTRACT_SOURCE_INPUT,,}" in
+          auto|"")
+            if [[ -n "$GENERATE_COMMAND_INPUT" ]]; then
+              CONTRACT_SOURCE="generated"
+            else
+              CONTRACT_SOURCE="committed_file"
+            fi
+            ;;
+          committed|committed_file)
+            CONTRACT_SOURCE="committed_file"
+            ;;
+          generated)
+            CONTRACT_SOURCE="generated"
+            ;;
+          *)
+            echo "::error::contract-source must be auto, committed_file, or generated."
+            exit 1
+            ;;
+        esac
+
+        WORKING_DIRECTORY="$WORKING_DIRECTORY_INPUT"
+        if [[ -z "$WORKING_DIRECTORY" ]]; then
+          WORKING_DIRECTORY="."
+        fi
+
+        if [[ "$WORKING_DIRECTORY" = /* || "$WORKING_DIRECTORY" == *".."* ]]; then
+          echo "::error::working-directory must be a repository-relative path without '..'."
+          exit 1
+        fi
+
+        if [[ "$CONTRACT_SOURCE" == "generated" && -z "$GENERATE_COMMAND_INPUT" ]]; then
+          echo "::error::contract-source=generated requires a non-empty generate-command."
+          exit 1
+        fi
+
+        if [[ "$CONTRACT_SOURCE" == "committed_file" && -n "$GENERATE_COMMAND_INPUT" ]]; then
+          echo "::error::contract-source=committed_file cannot be combined with generate-command."
+          exit 1
+        fi
+
+        write_env_value() {
+          local key="$1"
+          local value="$2"
+          local delimiter="API_ANALYZER_${key}_EOF"
+
+          {
+            printf '%s<<%s\n' "$key" "$delimiter"
+            printf '%s\n' "$value"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_ENV"
+        }
+
+        write_env_value "GENERATE_COMMAND" "$GENERATE_COMMAND_INPUT"
+        write_env_value "INSTALL_COMMAND" "$INSTALL_COMMAND"
+        write_env_value "DEPENDENCY_FILES" "$DEPENDENCY_FILES_INPUT"
+        write_env_value "GENERATOR_WARNINGS" "$GENERATOR_WARNINGS_INPUT"
+
+        while IFS= read -r env_line; do
+          [[ -z "$env_line" ]] && continue
+          env_key="${env_line%%=*}"
+          env_value="${env_line#*=}"
+          if [[ ! "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "::error::Invalid adapter environment variable name: $env_key"
+            exit 1
+          fi
+          if [[ "$env_value" == *$'\n'* || "$env_value" == *$'\r'* ]]; then
+            echo "::error::Adapter environment values must be single-line KEY=VALUE entries."
+            exit 1
+          fi
+          echo "$env_key=$env_value" >> "$GITHUB_ENV"
+        done <<< "$ENVIRONMENT_INPUT"
+
+        echo "CONTRACT_SOURCE=$CONTRACT_SOURCE" >> "$GITHUB_ENV"
+        echo "LANGUAGE=$LANGUAGE" >> "$GITHUB_ENV"
+        echo "PACKAGE_MANAGER=$PACKAGE_MANAGER" >> "$GITHUB_ENV"
+        echo "WORKING_DIRECTORY=$WORKING_DIRECTORY" >> "$GITHUB_ENV"
+        echo "ADAPTER_NAME=$ADAPTER_NAME" >> "$GITHUB_ENV"
+        echo "ADAPTER_VERSION=$ADAPTER_VERSION" >> "$GITHUB_ENV"
 
         if [[ ! "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
           echo "::error::poll-timeout-seconds must be a positive integer."
@@ -321,56 +466,222 @@ runs:
     - name: Prepare repository runtime dependencies
       if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
-      env:
-        GENERATE_COMMAND: ${{ inputs.generate-command }}
       run: |
         set -euo pipefail
 
-        bootstrap_python() {
+        normalize_plan_path() {
+          local value="$1"
+          if [[ -z "$value" || "$value" == "." ]]; then
+            printf '%s' "."
+            return
+          fi
+
+          if [[ "$value" = /* || "$value" == *".."* ]]; then
+            echo "::error::Invalid adapter working directory: $value"
+            exit 1
+          fi
+
+          printf '%s' "${value#./}"
+        }
+
+        run_in_working_directory() {
+          local repo_dir="$1"
+          local command="$2"
+          local workdir="$WORKING_DIRECTORY"
+
+          if [[ -z "$command" ]]; then
+            return 0
+          fi
+
+          if [[ "$workdir" == "." ]]; then
+            (cd "$repo_dir" && eval "$command")
+          else
+            (cd "$repo_dir/$workdir" && eval "$command")
+          fi
+        }
+
+        install_python_dependencies() {
           local repo_dir="$1"
           local label="$2"
+          local workdir="$3"
           local venv_dir="$repo_dir/.api-analyzer-venv"
           local requirements_file=""
 
-          echo "Preparing Python environment for $label: $repo_dir"
-
+          echo "Preparing Python runtime for $label"
           python -m venv "$venv_dir"
           "$venv_dir/bin/python" -m pip install --upgrade pip setuptools wheel
 
-          if [[ -f "$repo_dir/requirements.txt" ]]; then
-            requirements_file="$repo_dir/requirements.txt"
-          elif [[ -f "$repo_dir/requirements-dev.txt" ]]; then
-            requirements_file="$repo_dir/requirements-dev.txt"
+          while IFS= read -r raw_file; do
+            local dependency_file="${raw_file//\\///}"
+            dependency_file="${dependency_file#./}"
+            [[ -z "$dependency_file" ]] && continue
+            if [[ -f "$repo_dir/$dependency_file" ]]; then
+              case "$(basename "$dependency_file")" in
+                requirements*.txt)
+                  requirements_file="$dependency_file"
+                  break
+                  ;;
+                pyproject.toml|setup.py|setup.cfg)
+                  requirements_file="$dependency_file"
+                  break
+                  ;;
+              esac
+            fi
+          done <<< "${DEPENDENCY_FILES:-}"
+
+          if [[ -z "$requirements_file" ]]; then
+            local python_project_dir="$repo_dir"
+            if [[ "$workdir" != "." ]]; then
+              python_project_dir="$repo_dir/$workdir"
+            fi
+
+            if [[ -f "$python_project_dir/requirements.txt" ]]; then
+              requirements_file="${workdir:+$workdir/}requirements.txt"
+              requirements_file="${requirements_file#./}"
+            elif [[ -f "$python_project_dir/requirements-dev.txt" ]]; then
+              requirements_file="${workdir:+$workdir/}requirements-dev.txt"
+              requirements_file="${requirements_file#./}"
+            elif [[ -f "$python_project_dir/pyproject.toml" || -f "$python_project_dir/setup.py" || -f "$python_project_dir/setup.cfg" ]]; then
+              requirements_file="${workdir:+$workdir/}pyproject.toml"
+              requirements_file="${requirements_file#./}"
+            elif [[ -f "$repo_dir/requirements.txt" ]]; then
+              requirements_file="requirements.txt"
+            elif [[ -f "$repo_dir/requirements-dev.txt" ]]; then
+              requirements_file="requirements-dev.txt"
+            elif [[ -f "$repo_dir/pyproject.toml" || -f "$repo_dir/setup.py" || -f "$repo_dir/setup.cfg" ]]; then
+              requirements_file="pyproject.toml"
+            fi
           fi
 
-          if [[ -n "$requirements_file" ]]; then
-            echo "Installing Python dependencies from $requirements_file"
-            "$venv_dir/bin/python" -m pip install -r "$requirements_file"
-          elif [[ -f "$repo_dir/pyproject.toml" || -f "$repo_dir/setup.py" || -f "$repo_dir/setup.cfg" ]]; then
-            echo "Installing Python project dependencies from repository metadata..."
-            "$venv_dir/bin/python" -m pip install "$repo_dir"
-          else
-            echo "::error::Python API generation was detected for $label, but no supported Python dependency file was found."
-            echo "::error::Expected requirements.txt, requirements-dev.txt, pyproject.toml, setup.py, or setup.cfg."
+          if [[ -n "$INSTALL_COMMAND" ]]; then
+            source "$venv_dir/bin/activate"
+            run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+          elif [[ -n "$requirements_file" ]]; then
+            if [[ "$requirements_file" == requirements*.txt ]]; then
+              "$venv_dir/bin/python" -m pip install -r "$repo_dir/$requirements_file"
+            else
+              "$venv_dir/bin/python" -m pip install "$repo_dir/$workdir"
+            fi
+          elif [[ -n "${GENERATE_COMMAND:-}" ]]; then
+            echo "::error::Python contract generation requested for $label, but no dependency installation plan was provided and no supported Python dependency file was found."
             exit 1
+          else
+            echo "No Python dependency installation required for $label."
           fi
 
           echo "${label^^}_PYTHON_VENV=$venv_dir" >> "$GITHUB_ENV"
         }
 
-        bootstrap_node() {
+        install_node_dependencies() {
+          local repo_dir="$1"
+          local label="$2"
+          local workdir="$WORKING_DIRECTORY"
+          local package_dir="$repo_dir"
+
+          if [[ "$workdir" != "." ]]; then
+            package_dir="$repo_dir/$workdir"
+          fi
+
+          echo "Preparing Node.js runtime for $label: $package_dir"
+
+          if [[ -n "$INSTALL_COMMAND" ]]; then
+            run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+            return
+          fi
+
+          if [[ ! -f "$package_dir/package.json" ]]; then
+            echo "::error::Node.js package.json not found in working directory for $label: $package_dir"
+            exit 1
+          fi
+
+          case "${PACKAGE_MANAGER,,}" in
+            pnpm)
+              corepack enable
+              if [[ -f "$package_dir/pnpm-lock.yaml" ]]; then
+                (cd "$package_dir" && corepack pnpm install --frozen-lockfile)
+              else
+                (cd "$package_dir" && corepack pnpm install)
+              fi
+              ;;
+            yarn)
+              corepack enable
+              if [[ -f "$package_dir/yarn.lock" ]]; then
+                (cd "$package_dir" && corepack yarn install --frozen-lockfile)
+              else
+                (cd "$package_dir" && corepack yarn install)
+              fi
+              ;;
+            npm|"")
+              if [[ -f "$package_dir/package-lock.json" || -f "$package_dir/npm-shrinkwrap.json" ]]; then
+                (cd "$package_dir" && npm ci --no-audit --no-fund)
+              else
+                (cd "$package_dir" && npm install --no-audit --no-fund)
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported Node.js package manager '$PACKAGE_MANAGER'. Supply install-command from the adapter."
+              exit 1
+              ;;
+          esac
+        }
+
+        install_java_dependencies() {
+          local repo_dir="$1"
+          local label="$2"
+          local workdir="$WORKING_DIRECTORY"
+          local project_dir="$repo_dir"
+
+          if [[ "$workdir" != "." ]]; then
+            project_dir="$repo_dir/$workdir"
+          fi
+
+          echo "Preparing Java runtime for $label: $project_dir"
+
+          if [[ -n "$INSTALL_COMMAND" ]]; then
+            run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+            return
+          fi
+
+          case "${PACKAGE_MANAGER,,}" in
+            maven|"")
+              if [[ -x "$project_dir/mvnw" ]]; then
+                (cd "$project_dir" && ./mvnw -q -DskipTests dependency:go-offline)
+              elif command -v mvn >/dev/null 2>&1 && [[ -f "$project_dir/pom.xml" ]]; then
+                (cd "$project_dir" && mvn -q -DskipTests dependency:go-offline)
+              else
+                echo "::error::Java/Maven contract generation requires mvnw/pom.xml or an adapter install-command."
+                exit 1
+              fi
+              ;;
+            gradle)
+              if [[ -x "$project_dir/gradlew" ]]; then
+                (cd "$project_dir" && ./gradlew --no-daemon dependencies >/dev/null)
+              elif command -v gradle >/dev/null 2>&1; then
+                (cd "$project_dir" && gradle --no-daemon dependencies >/dev/null)
+              else
+                echo "::error::Java/Gradle contract generation requires gradlew or an adapter install-command."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unsupported Java package manager '$PACKAGE_MANAGER'. Supply install-command from the adapter."
+              exit 1
+              ;;
+          esac
+        }
+
+        install_dotnet_dependencies() {
           local repo_dir="$1"
           local label="$2"
 
-          echo "Preparing Node.js dependencies for $label: $repo_dir"
+          echo "Preparing .NET runtime for $label"
 
-          if [[ -f "$repo_dir/package-lock.json" || -f "$repo_dir/npm-shrinkwrap.json" ]]; then
-            (cd "$repo_dir" && npm ci --no-audit --no-fund)
-          elif [[ -f "$repo_dir/package.json" ]]; then
-            (cd "$repo_dir" && npm install --no-audit --no-fund)
+          if [[ -n "$INSTALL_COMMAND" ]]; then
+            run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+          elif [[ "$WORKING_DIRECTORY" == "." ]]; then
+            (cd "$repo_dir" && dotnet restore)
           else
-            echo "::error::Node.js API generation was detected for $label, but package.json was not found."
-            exit 1
+            (cd "$repo_dir/$WORKING_DIRECTORY" && dotnet restore)
           fi
         }
 
@@ -378,18 +689,60 @@ runs:
           local repo_dir="$1"
           local label="$2"
 
-          if [[ -f "$repo_dir/manage.py" || "$GENERATE_COMMAND" == *"manage.py"* ]]; then
-            bootstrap_python "$repo_dir" "$label"
-            return
+          if [[ -z "$GENERATE_COMMAND" ]]; then
+            echo "Contract source is '$CONTRACT_SOURCE'; no generation command is required for $label."
+            return 0
           fi
 
-          if [[ -f "$repo_dir/package.json" || "$GENERATE_COMMAND" == *"npm "* || "$GENERATE_COMMAND" == *"npx "* ]]; then
-            bootstrap_node "$repo_dir" "$label"
-            return
-          fi
+          local language="${LANGUAGE,,}"
+          local package_manager="${PACKAGE_MANAGER,,}"
 
-          echo "No repository-local dependency bootstrap required for $label."
+          case "$language" in
+            python)
+              install_python_dependencies "$repo_dir" "$label" "$WORKING_DIRECTORY"
+              ;;
+            node|node.js|"node.js / javascript"|javascript|typescript|javascript/typescript|typescript/javascript)
+              install_node_dependencies "$repo_dir" "$label"
+              ;;
+            java)
+              install_java_dependencies "$repo_dir" "$label"
+              ;;
+            c#|csharp|.net|dotnet|asp.net|"asp.net / .net")
+              install_dotnet_dependencies "$repo_dir" "$label"
+              ;;
+            "")
+              # Backwards-compatible inference for older generated workflows.
+              if [[ -f "$repo_dir/manage.py" || "$GENERATE_COMMAND" == *"manage.py"* ]]; then
+                LANGUAGE="Python"
+                install_python_dependencies "$repo_dir" "$label" "$WORKING_DIRECTORY"
+              elif [[ -f "$repo_dir/package.json" || "$GENERATE_COMMAND" == *"npm "* || "$GENERATE_COMMAND" == *"npx "* ]]; then
+                LANGUAGE="Node.js"
+                install_node_dependencies "$repo_dir" "$label"
+              elif [[ -f "$repo_dir/pom.xml" || -f "$repo_dir/mvnw" || "$GENERATE_COMMAND" == *"mvn"* || "$GENERATE_COMMAND" == *"gradle"* ]]; then
+                LANGUAGE="Java"
+                install_java_dependencies "$repo_dir" "$label"
+              elif [[ -n "$(find "$repo_dir" -maxdepth 2 \( -name '*.csproj' -o -name '*.sln' -o -name '*.slnx' \) -print -quit)" || "$GENERATE_COMMAND" == dotnet* || "$GENERATE_COMMAND" == *" dotnet "* ]]; then
+                LANGUAGE="C#"
+                install_dotnet_dependencies "$repo_dir" "$label"
+              elif [[ -n "$INSTALL_COMMAND" ]]; then
+                run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+              else
+                echo "No repository-local runtime bootstrap required for $label."
+              fi
+              ;;
+            *)
+              if [[ -n "$INSTALL_COMMAND" ]]; then
+                run_in_working_directory "$repo_dir" "$INSTALL_COMMAND"
+              else
+                echo "::error::Unsupported adapter language '$LANGUAGE'. Supply a valid language/package-manager/install-command plan."
+                exit 1
+              fi
+              ;;
+          esac
         }
+
+        # Workdir is normalized once after Prepare CI variables.
+        WORKING_DIRECTORY="$(normalize_plan_path "$WORKING_DIRECTORY")"
 
         prepare_runtime "$BASE_DIR" "base"
         prepare_runtime "$HEAD_DIR" "head"
@@ -462,35 +815,75 @@ runs:
 
 
     # ============================================================
-    # 10. Validate JSON specifications
+    # 10. Normalize and validate OpenAPI specifications
     # ============================================================
 
-    - name: Validate JSON specifications
+    - name: Normalize and validate OpenAPI specifications
       if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
 
-        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" <<'PY'
+        normalize_spec() {
+          local input_path="$1"
+          local output_path="$2"
+
+          if [[ ! -f "$input_path" ]]; then
+            echo "::error::Specification not found: $input_path"
+            exit 1
+          fi
+
+          case "${input_path##*.}" in
+            json|JSON)
+              jq empty "$input_path"
+              jq -e 'type == "object" and (.openapi != null or .swagger != null)' "$input_path" >/dev/null || {
+                echo "::error::Specification is not a valid OpenAPI/Swagger JSON object: $input_path"
+                exit 1
+              }
+              jq '.' "$input_path" > "$output_path"
+              ;;
+            yaml|yml|YAML|YML)
+              ruby -ryaml -rjson -e '
+                input, output = ARGV
+                data = YAML.safe_load_file(input, aliases: true)
+                unless data.is_a?(Hash) && (data.key?("openapi") || data.key?("swagger"))
+                  abort("Specification is not a valid OpenAPI/Swagger YAML object: #{input}")
+                end
+                File.write(output, JSON.generate(data))
+              ' "$input_path" "$output_path"
+              ;;
+            *)
+              echo "::error::Unsupported OpenAPI file extension for $input_path. Use .json, .yaml, or .yml."
+              exit 1
+              ;;
+          esac
+
+          python - "$output_path" <<'PY'
         import json
         import sys
 
-        for path in sys.argv[1:]:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        path = sys.argv[1]
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-            if not isinstance(data, dict):
-                raise SystemExit(
-                    f"OpenAPI specification must be a JSON object: {path}"
-                )
+        if not isinstance(data, dict):
+            raise SystemExit(f"Normalized specification must be a JSON object: {path}")
 
-            if "openapi" not in data:
-                raise SystemExit(
-                    f"Missing 'openapi' field: {path}"
-                )
+        if not data.get("openapi") and not data.get("swagger"):
+            raise SystemExit(f"Missing OpenAPI/Swagger version field: {path}")
 
-            print(f"Validated: {path}")
+        print(f"Validated OpenAPI contract: {path}")
         PY
+        }
+
+        BASE_SPEC_JSON="$RUNNER_TEMP/api-analyzer-base-spec.json"
+        HEAD_SPEC_JSON="$RUNNER_TEMP/api-analyzer-head-spec.json"
+
+        normalize_spec "$BASE_SPEC_FILE" "$BASE_SPEC_JSON"
+        normalize_spec "$HEAD_SPEC_FILE" "$HEAD_SPEC_JSON"
+
+        echo "BASE_SPEC_JSON=$BASE_SPEC_JSON" >> "$GITHUB_ENV"
+        echo "HEAD_SPEC_JSON=$HEAD_SPEC_JSON" >> "$GITHUB_ENV"
 
 
     # ============================================================
@@ -503,14 +896,14 @@ runs:
       run: |
         set -euo pipefail
 
-        python - "$BASE_SPEC_FILE" "$HEAD_SPEC_FILE" \
+        python - "$BASE_SPEC_JSON" "$HEAD_SPEC_JSON" \
           > "$RUNNER_TEMP/api-analyzer-payload.json" <<'PY'
         import json
         import os
         import sys
 
         if len(sys.argv) != 3:
-            raise SystemExit("Expected exactly two specification paths.")
+            raise SystemExit("Expected exactly two normalized specification paths.")
 
         base_path = sys.argv[1]
         head_path = sys.argv[2]
@@ -520,6 +913,33 @@ runs:
 
         with open(head_path, "r", encoding="utf-8") as f:
             head_spec = json.load(f)
+
+        dependency_files = [
+            line.strip()
+            for line in os.environ.get("DEPENDENCY_FILES", "").splitlines()
+            if line.strip()
+        ]
+        generator_warnings = [
+            line.strip()
+            for line in os.environ.get("GENERATOR_WARNINGS", "").splitlines()
+            if line.strip()
+        ]
+
+        runtime = {
+            "language": os.environ.get("LANGUAGE", ""),
+            "package_manager": os.environ.get("PACKAGE_MANAGER", ""),
+            "dependency_files": dependency_files,
+            "working_directory": os.environ.get("WORKING_DIRECTORY", "."),
+            "install_command": os.environ.get("INSTALL_COMMAND", ""),
+        }
+
+        adapter = {
+            "name": os.environ.get("ADAPTER_NAME", "customer-action"),
+            "version": os.environ.get("ADAPTER_VERSION", "1"),
+        }
+        adapter["runtime"] = runtime
+
+        source_type = os.environ.get("CONTRACT_SOURCE", "generated")
 
         payload = {
             "project_id": os.environ["PROJECT_ID"],
@@ -535,20 +955,17 @@ runs:
             "head_sha": os.environ["HEAD_SHA"],
             "base_spec": {
                 "path": os.environ["SPEC_PATH"],
-                "source_type": "generated",
+                "source_type": source_type,
                 "content": base_spec,
             },
             "head_spec": {
                 "path": os.environ["SPEC_PATH"],
-                "source_type": "generated",
+                "source_type": source_type,
                 "content": head_spec,
             },
             "registered_routes": [],
-            "generator_warnings": [],
-            "adapter": {
-                "name": "customer-action",
-                "version": "1",
-            },
+            "generator_warnings": generator_warnings,
+            "adapter": adapter,
         }
 
         print(json.dumps(payload))
@@ -580,6 +997,11 @@ runs:
           curl \
             --silent \
             --show-error \
+            --connect-timeout 15 \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 2 \
+            --retry-connrefused \
             --output "$RESPONSE_FILE" \
             --write-out "%{http_code}" \
             --request POST \
@@ -664,6 +1086,11 @@ runs:
             curl \
               --silent \
               --show-error \
+              --connect-timeout 15 \
+              --max-time 60 \
+              --retry 3 \
+              --retry-delay 2 \
+              --retry-connrefused \
               --output "$RUNNER_TEMP/api-analyzer-status.json" \
               --write-out "%{http_code}" \
               --request GET \
@@ -681,7 +1108,7 @@ runs:
 
           STATUS="$(echo "$RESPONSE" | jq -r '.status // ""')"
           GATE_STATUS="$(echo "$RESPONSE" | jq -r '.gate_status // ""')"
-          REASON_CODE="$(echo "$RESPONSE" | jq -r '.reason_code // ""')"
+          REASON_CODE="$(echo "$RESPONSE" | jq -r '.reason_code // .gate_reason_code // ""')"
           PROGRESS="$(echo "$RESPONSE" | jq -r '.progress // 0')"
           STAGE="$(echo "$RESPONSE" | jq -r '.stage // ""')"
           REPORT_URL="$(echo "$RESPONSE" | jq -r '.report_url // ""')"
@@ -766,7 +1193,37 @@ runs:
 
 
     # ============================================================
-    # 15. Cleanup worktrees
+    # 15. Publish CI summary
+    # ============================================================
+
+    - name: Publish API Analyzer summary
+      if: ${{ always() && steps.mode.outputs.skip != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        {
+          echo "## API Analyzer compatibility"
+          echo
+          echo "- Repository: \\`$REPOSITORY\\`"
+          echo "- Pull request: #$PR_NUMBER"
+          echo "- Contract: \\`$SPEC_PATH\\`"
+          echo "- Contract source: \\`$CONTRACT_SOURCE\\`"
+          echo "- Adapter: \\`$ADAPTER_NAME@$ADAPTER_VERSION\\`"
+          echo "- Gate: \\`${GATE_STATUS:-unknown}\\`"
+          echo "- Reason: \\`${REASON_CODE:-none}\\`"
+          if [[ -n "${COMPARISON_ID:-}" ]]; then
+            echo "- Comparison ID: \\`$COMPARISON_ID\\`"
+          fi
+          if [[ -n "${REPORT_URL:-}" ]]; then
+            echo "- Report: $REPORT_URL"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+
+
+    # ============================================================
+    # 16. Cleanup worktrees
     # ============================================================
 
     - name: Cleanup worktrees
