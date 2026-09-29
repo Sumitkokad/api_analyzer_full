@@ -344,6 +344,15 @@ function navigateTo(route, params = {}) {
   }
 }
 
+function replaceTo(route, params = {}) {
+  const nextHash = buildHashPath(route, params)
+  const nextUrl = `${window.location.pathname}${nextHash}`
+
+  if (window.location.hash !== nextHash || window.location.search) {
+    window.history.replaceState({}, document.title, nextUrl)
+  }
+}
+
 function savePendingAuthRoute(locationState) {
   if (!locationState || !locationState.route) return
 
@@ -545,21 +554,22 @@ export default function App() {
     }
 
     const targetParams = projectId ? { project_id: projectId } : {}
-    navigateTo('github', targetParams)
+
+    // Canonicalize the callback URL with replaceState, not hash navigation.
+    // Using window.location.hash here creates a second browser history entry;
+    // pressing Chrome Back then returns to the GitHub callback URL and can
+    // trigger the callback handler again.
+    replaceTo('github', targetParams)
+    setRouteLocation({
+      route: 'github',
+      params: new URLSearchParams(targetParams),
+    })
 
     const callbackNotice = githubCallbackMessage(result, reason)
     setNotice(callbackNotice)
 
     if (fromRootQuery) {
       cleanLegacyRootQuery()
-    }
-
-    // Remove callback-only query fields from the hash after the message has
-    // been captured. The canonical GitHub CI URL keeps only project_id.
-    if (routeParams.has('github')) {
-      window.setTimeout(() => {
-        navigateTo('github', targetParams)
-      }, 0)
     }
   }, [authed, routeParams])
 
@@ -2093,7 +2103,7 @@ function GitHubCIPage({
 
       rememberLastProject(projectId)
       navigateTo('github', { project_id: projectId })
-      window.location.assign(data.install_url)
+      window.location.replace(data.install_url)
     } catch (error) {
       setGithubError(
         error.message ||
@@ -2144,14 +2154,11 @@ function GitHubCIPage({
 
       setRepository(connectedRepository)
 
-      setGithubConnection((current) => ({
-        ...current,
-        connected: true,
-        installation_connected: true,
-        repository_full_name: connectedRepository,
-      }))
       rememberLastProject(projectId)
-      navigateTo('github', { project_id: projectId })
+      // Reload the authoritative connection/repository state from the backend.
+      // The user remains on GitHub CI; there is no external redirect after save.
+      await loadGithubState(projectId)
+      replaceTo('github', { project_id: projectId })
     } catch (error) {
       setGithubError(
         error.message ||
