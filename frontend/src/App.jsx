@@ -2095,15 +2095,26 @@ function GitHubCIPage({
         return
       }
 
-      if (!data?.install_url) {
+      const githubAuthorizationUrl =
+        data?.authorize_url ||
+        data?.oauth_url ||
+        data?.install_url
+
+      if (!githubAuthorizationUrl) {
         throw new Error(
-          'The backend did not return a GitHub installation URL.',
+          'The backend did not return a GitHub authorization URL.',
         )
       }
 
       rememberLastProject(projectId)
       navigateTo('github', { project_id: projectId })
-      window.location.replace(data.install_url)
+
+      // OAuth-first is intentional. For an already-installed GitHub App,
+      // opening /installations/new can send the user to GitHub's installation
+      // settings page and never return to API Analyzer after Save. Starting
+      // with OAuth lets the backend detect the existing installation and
+      // return directly to this project's GitHub page.
+      window.location.replace(githubAuthorizationUrl)
     } catch (error) {
       setGithubError(
         error.message ||
