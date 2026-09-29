@@ -279,13 +279,190 @@ function writeGithubConfig(projectId, config) {
   }
 }
 
-function yamlSingleQuote(value) {
-  return `'${String(value || '').replace(/\r?\n/g, ' ').replace(/'/g, "''")}'`
+const VALID_ROUTES = new Set([
+  'login',
+  'register',
+  'dashboard',
+  'compare',
+  'history',
+  'jobs',
+  'github',
+  'demo',
+])
+
+const PENDING_AUTH_ROUTE_KEY = 'apiAnalyzerPendingAuthRoute:v1'
+const LAST_PROJECT_KEY = 'apiAnalyzerLastProjectId:v1'
+const GITHUB_CALLBACK_PROJECT_KEY = 'apiAnalyzerGithubCallbackProjectId'
+
+function parseHashLocation() {
+  const rawHash = String(window.location.hash || '')
+  const raw = rawHash.startsWith('#/')
+    ? rawHash.slice(2)
+    : rawHash.replace(/^#/, '')
+
+  const [rawRoute = '', rawQuery = ''] = raw.split('?', 2)
+  const candidateRoute = String(rawRoute || '').trim().toLowerCase()
+  const route = VALID_ROUTES.has(candidateRoute)
+    ? candidateRoute
+    : 'dashboard'
+
+  return {
+    route,
+    params: new URLSearchParams(rawQuery),
+  }
+}
+
+function routeParamsObject(params) {
+  const result = {}
+  if (!params) return result
+  params.forEach((value, key) => {
+    result[key] = value
+  })
+  return result
+}
+
+function buildHashPath(route, params = {}) {
+  const safeRoute = VALID_ROUTES.has(String(route || '').toLowerCase())
+    ? String(route).toLowerCase()
+    : 'dashboard'
+
+  const query = new URLSearchParams()
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== '') {
+      query.set(key, String(value))
+    }
+  })
+
+  const queryString = query.toString()
+  return `#/${safeRoute}${queryString ? `?${queryString}` : ''}`
+}
+
+function navigateTo(route, params = {}) {
+  const nextHash = buildHashPath(route, params)
+  if (window.location.hash !== nextHash) {
+    window.location.hash = nextHash
+  }
+}
+
+function savePendingAuthRoute(locationState) {
+  if (!locationState || !locationState.route) return
+
+  try {
+    sessionStorage.setItem(
+      PENDING_AUTH_ROUTE_KEY,
+      JSON.stringify({
+        route: locationState.route,
+        params: routeParamsObject(locationState.params),
+      }),
+    )
+  } catch {
+    // Session storage is optional.
+  }
+}
+
+function readPendingAuthRoute() {
+  try {
+    const raw = sessionStorage.getItem(PENDING_AUTH_ROUTE_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw)
+    if (!parsed || !VALID_ROUTES.has(String(parsed.route || '').toLowerCase())) {
+      return null
+    }
+
+    return {
+      route: String(parsed.route).toLowerCase(),
+      params: parsed.params && typeof parsed.params === 'object'
+        ? parsed.params
+        : {},
+    }
+  } catch {
+    return null
+  }
+}
+
+function clearPendingAuthRoute() {
+  try {
+    sessionStorage.removeItem(PENDING_AUTH_ROUTE_KEY)
+  } catch {
+    // Session storage is optional.
+  }
+}
+
+function rememberLastProject(projectId) {
+  if (!projectId) return
+  try {
+    localStorage.setItem(LAST_PROJECT_KEY, String(projectId))
+  } catch {
+    // Local storage is optional.
+  }
+}
+
+function readLastProjectId() {
+  try {
+    return localStorage.getItem(LAST_PROJECT_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function extractGithubCallback() {
+  const hashLocation = parseHashLocation()
+  const rootParams = new URLSearchParams(window.location.search || '')
+  const hasRootCallback = rootParams.has('github')
+  const hasHashCallback = hashLocation.params.has('github')
+
+  if (!hasRootCallback && !hasHashCallback) return null
+
+  const source = hasHashCallback ? hashLocation.params : rootParams
+  const github = String(source.get('github') || '').trim().toLowerCase()
+  const projectId = String(source.get('project_id') || '').trim()
+  const reason = String(source.get('reason') || '').trim()
+
+  if (!github) return null
+
+  return {
+    result: github,
+    projectId,
+    reason,
+    location: hashLocation,
+    fromRootQuery: hasRootCallback,
+  }
+}
+
+function cleanLegacyRootQuery() {
+  if (!window.location.search) return
+  const cleanedUrl = `${window.location.pathname}${window.location.hash}`
+  window.history.replaceState({}, document.title, cleanedUrl)
+}
+
+function githubCallbackMessage(result, reason) {
+  if (result === 'connected') {
+    return {
+      text: 'GitHub App connected successfully. Select the repository to finish setup.',
+      type: 'success',
+    }
+  }
+
+  const reasonMessages = {
+    github_app_not_configured: 'GitHub App is not configured on the analyzer backend.',
+    github_authorization_incomplete: 'GitHub authorization was not completed.',
+    github_installation_verification_failed: 'GitHub installation verification failed. Review the GitHub App configuration and try again.',
+    github_connection_failed: 'The GitHub connection could not be completed.',
+    invalid_or_expired_state: 'The GitHub installation link expired. Start the connection again.',
+    missing_state: 'The GitHub callback did not include a valid state.',
+  }
+
+  return {
+    text: reasonMessages[reason] || 'GitHub connection did not complete successfully.',
+    type: 'error',
+  }
 }
 
 export default function App() {
+  const initialLocation = parseHashLocation()
   const [session, setSession] = useState(readSession)
-  const [route, setRoute] = useState(() => window.location.hash.replace('#/', '') || 'dashboard')
+  const [routeLocation, setRouteLocation] = useState(initialLocation)
   const [projects, setProjects] = useState([])
   const [comparisons, setComparisons] = useState([])
   const [jobs, setJobs] = useState([])
@@ -295,14 +472,21 @@ export default function App() {
   const [runPhase, setRunPhase] = useState(null)
   const [demoModalOpen, setDemoModalOpen] = useState(false)
   const authed = Boolean(session.token)
+  const route = routeLocation.route
+  const routeParams = routeLocation.params
 
   useEffect(() => {
-    const onHash = () => {
-      const current = window.location.hash.replace('#/', '') || 'dashboard'
-      setRoute(current)
+    const onLocationChange = () => {
+      setRouteLocation(parseHashLocation())
     }
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
+
+    window.addEventListener('hashchange', onLocationChange)
+    window.addEventListener('popstate', onLocationChange)
+
+    return () => {
+      window.removeEventListener('hashchange', onLocationChange)
+      window.removeEventListener('popstate', onLocationChange)
+    }
   }, [])
 
   const showNotice = (text, type = 'info') => {
@@ -313,59 +497,71 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!authed) return
+    if (authed) return
 
-    const params = new URLSearchParams(window.location.search)
-    const githubResult = params.get('github')
-    const githubProjectId = params.get('project_id')
-    const githubReason = params.get('reason')
+    if (route === 'login' || route === 'register') return
 
-    if (!githubResult) return
+    // The bare site URL resolves to dashboard, but that is only the default
+    // landing page. Do not remember that default as a deep-link destination;
+    // a fresh registration should therefore continue into Compare.
+    const hasExplicitHash = Boolean(window.location.hash)
+    if (route === 'dashboard' && !hasExplicitHash) return
 
-    if (githubProjectId) {
+    savePendingAuthRoute(routeLocation)
+  }, [authed, route, routeLocation])
+
+  useEffect(() => {
+    const callback = extractGithubCallback()
+    if (!callback) return
+
+    const { result, projectId, reason, fromRootQuery } = callback
+
+    if (projectId) {
       try {
         sessionStorage.setItem(
-          'apiAnalyzerGithubCallbackProjectId',
-          String(githubProjectId),
+          GITHUB_CALLBACK_PROJECT_KEY,
+          String(projectId),
         )
       } catch {
         // Session storage is optional.
       }
     }
 
-    window.location.hash = '#/github'
-
-    if (githubResult === 'connected') {
-      setNotice({
-        text: 'GitHub App connected successfully. Select the repository to finish setup.',
-        type: 'success',
+    if (!authed) {
+      // Preserve the complete callback route until authentication succeeds.
+      savePendingAuthRoute({
+        route: 'github',
+        params: {
+          github: result,
+          ...(projectId ? { project_id: projectId } : {}),
+          ...(reason ? { reason } : {}),
+        },
       })
-    } else {
-      const reasonMessages = {
-        github_app_not_configured: 'GitHub App is not configured on the analyzer backend.',
-        github_authorization_incomplete: 'GitHub authorization was not completed.',
-        github_installation_verification_failed: 'GitHub installation verification failed. Review the GitHub App configuration and try again.',
-        github_connection_failed: 'The GitHub connection could not be completed.',
-        invalid_or_expired_state: 'The GitHub installation link expired. Start the connection again.',
-        missing_state: 'The GitHub callback did not include a valid state.',
+
+      if (fromRootQuery) {
+        cleanLegacyRootQuery()
       }
-
-      setNotice({
-        text:
-          reasonMessages[githubReason] ||
-          'GitHub connection did not complete successfully.',
-        type: 'error',
-      })
+      return
     }
 
-    const cleanedUrl = `${window.location.pathname}${window.location.hash}`
+    const targetParams = projectId ? { project_id: projectId } : {}
+    navigateTo('github', targetParams)
 
-    window.history.replaceState(
-      {},
-      document.title,
-      cleanedUrl,
-    )
-  }, [authed])
+    const callbackNotice = githubCallbackMessage(result, reason)
+    setNotice(callbackNotice)
+
+    if (fromRootQuery) {
+      cleanLegacyRootQuery()
+    }
+
+    // Remove callback-only query fields from the hash after the message has
+    // been captured. The canonical GitHub CI URL keeps only project_id.
+    if (routeParams.has('github')) {
+      window.setTimeout(() => {
+        navigateTo('github', targetParams)
+      }, 0)
+    }
+  }, [authed, routeParams])
 
   const apiFetch = useCallback(async (path, options = {}) => {
     if (!API_BASE) {
@@ -395,6 +591,20 @@ export default function App() {
       const data = await response.json().catch(() => ({}))
 
       if (!response.ok) {
+        if (response.status === 401 && !String(path).startsWith('/auth/')) {
+          const currentLocation = parseHashLocation()
+          if (currentLocation.route !== 'login' && currentLocation.route !== 'register') {
+            savePendingAuthRoute(currentLocation)
+          }
+
+          localStorage.removeItem('apiAnalyzerToken')
+          localStorage.removeItem('apiAnalyzerUser')
+          setSession({ token: null, user: null })
+          navigateTo('login')
+
+          throw new Error('Your session expired. Please sign in again.')
+        }
+
         let errorMsg = `Request failed with status ${response.status}.`
 
         if (typeof data === 'string' && data.trim()) {
@@ -485,13 +695,33 @@ export default function App() {
   async function handleAuth(mode, payload) {
     setLoading(true)
     setNotice({ text: '', type: 'info' })
+
     try {
-      const data = await apiFetch(`/auth/${mode}/`, { method: 'POST', body: JSON.stringify(payload) })
+      const data = await apiFetch(`/auth/${mode}/`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+
       localStorage.setItem('apiAnalyzerToken', data.token)
       localStorage.setItem('apiAnalyzerUser', JSON.stringify(data.user))
       setSession({ token: data.token, user: data.user })
-      window.location.hash = '#/dashboard'
-      showNotice(`Signed in successfully as ${data.user?.username || 'user'}.`, 'success')
+
+      const pending = readPendingAuthRoute()
+      clearPendingAuthRoute()
+
+      const fallbackRoute = mode === 'register' ? 'compare' : 'dashboard'
+      const destination = pending || { route: fallbackRoute, params: {} }
+
+      if (destination.route === 'login' || destination.route === 'register') {
+        navigateTo(fallbackRoute)
+      } else {
+        navigateTo(destination.route, destination.params)
+      }
+
+      showNotice(
+        `Signed in successfully as ${data.user?.username || 'user'}.`,
+        'success',
+      )
     } catch (error) {
       showNotice(error.message, 'error')
     } finally {
@@ -520,7 +750,14 @@ export default function App() {
     setComparisons([])
     setJobs([])
     setActiveComparison(null)
-    window.location.hash = '#/login'
+    clearPendingAuthRoute()
+    try {
+      sessionStorage.removeItem(GITHUB_CALLBACK_PROJECT_KEY)
+    } catch {
+      // Session storage is optional.
+    }
+    localStorage.removeItem(LAST_PROJECT_KEY)
+    navigateTo('login')
     showNotice('You have been logged out.', 'info')
   }
 
@@ -626,6 +863,7 @@ export default function App() {
       })
 
       setActiveComparison(comparison)
+      rememberLastProject(projectId)
 
       showNotice(
         'Comparison completed successfully! Results and AI analysis are ready below.',
@@ -633,7 +871,7 @@ export default function App() {
       )
 
       await refreshData()
-      window.location.hash = '#/dashboard'
+      navigateTo('dashboard')
     } catch (error) {
       console.error('Compatibility audit failed:', error)
       showNotice(error.message, 'error')
@@ -716,7 +954,17 @@ export default function App() {
           {navItems.map(({ id, label, icon: Icon, badge }) => (
             <a
               key={id}
-              href={`#/${id}`}
+              href={
+                id === 'github' &&
+                (activeComparison?.project || readLastProjectId() || projects[0]?.id)
+                  ? buildHashPath('github', {
+                      project_id:
+                        activeComparison?.project ||
+                        readLastProjectId() ||
+                        projects[0]?.id,
+                    })
+                  : buildHashPath(id)
+              }
               className={route === id ? 'active' : ''}
             >
               <Icon />
@@ -795,7 +1043,7 @@ export default function App() {
             <button
               type="button"
               className="primary"
-              onClick={() => { window.location.hash = '#/compare' }}
+              onClick={() => navigateTo('compare')}
             >
               <IconPlus /> New Compare
             </button>
@@ -820,8 +1068,8 @@ export default function App() {
 
         {route === 'demo' && (
           <ProductDemoPage
-            onCloseDemo={() => { window.location.hash = '#/dashboard' }}
-            onOpenCompare={() => { window.location.hash = '#/compare' }}
+            onCloseDemo={() => navigateTo('dashboard')}
+            onOpenCompare={() => navigateTo('compare')}
           />
         )}
 
@@ -829,7 +1077,7 @@ export default function App() {
           <Dashboard
             comparison={latestComparison}
             loading={loading}
-            onOpenCompare={() => { window.location.hash = '#/compare' }}
+            onOpenCompare={() => navigateTo('compare')}
             onOpenVideo={() => setDemoModalOpen(true)}
           />
         )}
@@ -849,7 +1097,7 @@ export default function App() {
             projects={projects}
             onSelect={(comp) => {
               setActiveComparison(comp)
-              window.location.hash = '#/dashboard'
+              navigateTo('dashboard')
             }}
           />
         )}
@@ -866,10 +1114,17 @@ export default function App() {
           <GitHubCIPage
             projects={projects}
             comparisons={comparisons}
-            onOpenCompare={() => { window.location.hash = '#/compare' }}
+            routeProjectId={routeParams.get('project_id') || ''}
+            preferredProjectId={
+              activeComparison?.project ||
+              readLastProjectId() ||
+              projects[0]?.id ||
+              ''
+            }
+            onOpenCompare={() => navigateTo('compare')}
             onSelectComparison={(comp) => {
               setActiveComparison(comp)
-              window.location.hash = '#/dashboard'
+              navigateTo('dashboard')
             }}
             onRefresh={refreshComparisons}
             apiFetch={apiFetch}
@@ -883,7 +1138,7 @@ export default function App() {
           onClose={() => setDemoModalOpen(false)}
           onStartCompare={() => {
             setDemoModalOpen(false)
-            window.location.hash = '#/compare'
+            navigateTo('compare')
           }}
         />
       )}
@@ -1604,6 +1859,8 @@ function comparisonSummaryNote(comparison) {
 function GitHubCIPage({
   projects,
   comparisons,
+  routeProjectId,
+  preferredProjectId,
   onOpenCompare,
   onSelectComparison,
   onRefresh,
@@ -1612,12 +1869,14 @@ function GitHubCIPage({
   const [projectId, setProjectId] = useState(() => {
     try {
       return (
-        sessionStorage.getItem('apiAnalyzerGithubCallbackProjectId') ||
+        routeProjectId ||
+        sessionStorage.getItem(GITHUB_CALLBACK_PROJECT_KEY) ||
+        preferredProjectId ||
         projects[0]?.id ||
         ''
       )
     } catch {
-      return projects[0]?.id || ''
+      return routeProjectId || preferredProjectId || projects[0]?.id || ''
     }
   })
 
@@ -1639,10 +1898,19 @@ function GitHubCIPage({
   const [setupError, setSetupError] = useState('')
 
   useEffect(() => {
-    if (!projectId && projects.length > 0) {
-      setProjectId(projects[0].id)
+    const preferred =
+      routeProjectId ||
+      preferredProjectId ||
+      projectId ||
+      projects[0]?.id ||
+      ''
+
+    if (preferred && String(preferred) !== String(projectId)) {
+      setProjectId(preferred)
+    } else if (!projectId && preferred) {
+      setProjectId(preferred)
     }
-  }, [projects, projectId])
+  }, [routeProjectId, preferredProjectId, projects, projectId])
 
   const selectedProject = projects.find(
     (project) => String(project.id) === String(projectId),
@@ -1809,12 +2077,22 @@ function GitHubCIPage({
         `/github/install/start/?project_id=${projectId}`,
       )
 
+      if (data?.already_connected) {
+        rememberLastProject(projectId)
+        navigateTo('github', { project_id: projectId })
+        await loadGithubState(projectId)
+        setGithubConnecting(false)
+        return
+      }
+
       if (!data?.install_url) {
         throw new Error(
           'The backend did not return a GitHub installation URL.',
         )
       }
 
+      rememberLastProject(projectId)
+      navigateTo('github', { project_id: projectId })
       window.location.assign(data.install_url)
     } catch (error) {
       setGithubError(
@@ -1872,6 +2150,8 @@ function GitHubCIPage({
         installation_connected: true,
         repository_full_name: connectedRepository,
       }))
+      rememberLastProject(projectId)
+      navigateTo('github', { project_id: projectId })
     } catch (error) {
       setGithubError(
         error.message ||
@@ -1895,9 +2175,18 @@ function GitHubCIPage({
       return
     }
 
-    if (!githubConnection.connected || !repository) {
+    const selectedRepository = String(repository || '').trim().toLowerCase()
+    const connectedRepository = String(
+      githubConnection.repository_full_name || ''
+    ).trim().toLowerCase()
+
+    if (
+      !githubConnection.connected ||
+      !selectedRepository ||
+      selectedRepository !== connectedRepository
+    ) {
       setSetupError(
-        'Select and connect a GitHub repository first.',
+        'Select a repository and click Use this repository before enabling compatibility.',
       )
       return
     }
@@ -1950,10 +2239,15 @@ function GitHubCIPage({
     )
   }
 
+  const repositoryMatchesConnection =
+    Boolean(repository) &&
+    String(githubConnection.repository_full_name || '').trim().toLowerCase() ===
+      String(repository || '').trim().toLowerCase()
+
   const setupReady =
     githubConnection.installation_connected &&
     githubConnection.connected &&
-    Boolean(repository)
+    repositoryMatchesConnection
 
   return (
     <section className="github-ci-page">
@@ -2031,9 +2325,13 @@ function GitHubCIPage({
               <select
                 value={projectId}
                 onChange={(event) => {
-                  setProjectId(event.target.value)
+                  const nextProjectId = event.target.value
+                  setProjectId(nextProjectId)
                   setGithubError('')
                   setSetupError('')
+                  setSetupResult(null)
+                  rememberLastProject(nextProjectId)
+                  navigateTo('github', { project_id: nextProjectId })
                 }}
               >
                 <option value="">
@@ -2128,7 +2426,19 @@ function GitHubCIPage({
                     <select
                       value={repository}
                       onChange={(event) => {
-                        setRepository(event.target.value)
+                        const nextRepository = event.target.value
+                        const connectedRepository = String(
+                          githubConnection.repository_full_name || ''
+                        ).trim().toLowerCase()
+
+                        setRepository(nextRepository)
+                        setGithubConnection((current) => ({
+                          ...current,
+                          connected:
+                            Boolean(nextRepository) &&
+                            String(nextRepository).trim().toLowerCase() ===
+                              connectedRepository,
+                        }))
                         setSetupResult(null)
                         setSetupError('')
                       }}
@@ -2308,16 +2618,22 @@ function GitHubCIPage({
                 </div>
               </div>
 
+              const setupAlreadyExists =
+                Boolean(setupResult?.setup?.pull_request_url)
+
               <button
                 type="button"
                 className="primary large-btn"
                 onClick={createSetupPR}
-                disabled={setupLoading}
+                disabled={setupLoading || setupAlreadyExists}
               >
                 <IconGithub />
+
                 {setupLoading
                   ? 'Preparing setup PR…'
-                  : 'Enable API Compatibility'}
+                  : setupAlreadyExists
+                    ? 'Setup PR Already Created'
+                    : 'Enable API Compatibility'}
               </button>
 
               {setupError && (
