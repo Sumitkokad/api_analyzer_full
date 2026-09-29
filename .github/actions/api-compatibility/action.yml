@@ -70,10 +70,37 @@ runs:
   steps:
 
     # ============================================================
+    # 0. Detect the one-time API Analyzer setup pull request.
+    #
+    # The setup PR adds the generator/configuration that the compatibility
+    # check itself needs. Running the analyzer on that PR would compare the
+    # repository before its generator dependencies exist.
+    # ============================================================
+
+    - name: Determine execution mode
+      id: mode
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        HEAD_REF="${GITHUB_HEAD_REF:-}"
+
+        if [[ "$HEAD_REF" == api-analyzer/setup/* ]]; then
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "API Analyzer setup PR detected: $HEAD_REF"
+          echo "Compatibility analysis is intentionally skipped for this one-time setup PR."
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Normal compatibility analysis requested."
+        fi
+
+
+    # ============================================================
     # 1. Validate GitHub PR context
     # ============================================================
 
     - name: Validate GitHub PR context
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -89,36 +116,40 @@ runs:
     # ============================================================
 
     - name: Prepare CI variables
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       id: prepare
       shell: bash
       env:
         PROJECT_ID: ${{ inputs.project-id }}
         API_BASE_URL: ${{ inputs.api-base-url }}
         SPEC_PATH: ${{ inputs.spec-path }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        TIMEOUT_SECONDS: ${{ inputs.poll-timeout-seconds }}
+        POLL_INTERVAL: ${{ inputs.poll-interval-seconds }}
       run: |
         set -euo pipefail
 
-        PR_NUMBER="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
-        REPOSITORY="$(jq -r '.repository.full_name' "$GITHUB_EVENT_PATH")"
-        BASE_SHA="$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
-        HEAD_SHA="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+        PR_NUMBER="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+        REPOSITORY="$(jq -r '.repository.full_name // empty' "$GITHUB_EVENT_PATH")"
+        BASE_SHA="$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")"
+        HEAD_SHA="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
 
-        if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "null" ]]; then
+        if [[ -z "$PR_NUMBER" ]]; then
           echo "::error::Unable to determine pull request number."
           exit 1
         fi
 
-        if [[ -z "$REPOSITORY" || "$REPOSITORY" == "null" ]]; then
+        if [[ -z "$REPOSITORY" ]]; then
           echo "::error::Unable to determine repository."
           exit 1
         fi
 
-        if [[ -z "$BASE_SHA" || "$BASE_SHA" == "null" ]]; then
+        if [[ -z "$BASE_SHA" ]]; then
           echo "::error::Unable to determine base SHA."
           exit 1
         fi
 
-        if [[ -z "$HEAD_SHA" || "$HEAD_SHA" == "null" ]]; then
+        if [[ -z "$HEAD_SHA" ]]; then
           echo "::error::Unable to determine head SHA."
           exit 1
         fi
@@ -138,6 +169,25 @@ runs:
           exit 1
         fi
 
+        if [[ ! "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::poll-timeout-seconds must be a positive integer."
+          exit 1
+        fi
+
+        if [[ ! "$POLL_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::poll-interval-seconds must be a positive integer."
+          exit 1
+        fi
+
+        case "${FAIL_ON_ERROR,,}" in
+          true|false)
+            ;;
+          *)
+            echo "::error::fail-on-error must be true or false."
+            exit 1
+            ;;
+        esac
+
         echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
         echo "REPOSITORY=$REPOSITORY" >> "$GITHUB_ENV"
         echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
@@ -146,6 +196,9 @@ runs:
         echo "PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
         echo "API_BASE_URL=$API_BASE_URL" >> "$GITHUB_ENV"
         echo "SPEC_PATH=$SPEC_PATH" >> "$GITHUB_ENV"
+        echo "FAIL_ON_ERROR=$FAIL_ON_ERROR" >> "$GITHUB_ENV"
+        echo "TIMEOUT_SECONDS=$TIMEOUT_SECONDS" >> "$GITHUB_ENV"
+        echo "POLL_INTERVAL=$POLL_INTERVAL" >> "$GITHUB_ENV"
 
         echo "project-id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
         echo "api-base-url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
@@ -162,19 +215,22 @@ runs:
     # ============================================================
 
     - name: Protect fork pull requests
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
 
-        IS_FORK="$(jq -r '.pull_request.head.repo.fork' "$GITHUB_EVENT_PATH")"
+        IS_FORK="$(jq -r '.pull_request.head.repo.fork // false' "$GITHUB_EVENT_PATH")"
 
         if [[ "$IS_FORK" == "true" && -z "$TOKEN" ]]; then
           echo "::error::API Analyzer project token is unavailable for this fork pull request."
-          echo "::error::The workflow cannot securely submit the contract without project authentication."
+          echo "::error::The compatibility check cannot securely submit the contract without project authentication."
           exit 1
         fi
+
+        echo "Fork status: $IS_FORK"
 
 
     # ============================================================
@@ -182,14 +238,13 @@ runs:
     # ============================================================
 
     - name: Fetch base and head commits
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
 
         git fetch --no-tags origin "$BASE_SHA"
         git fetch --no-tags origin "$HEAD_SHA"
-
-        PR_NUMBER="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
 
         git fetch \
           --no-tags \
@@ -202,6 +257,7 @@ runs:
     # ============================================================
 
     - name: Select baseline
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       id: baseline
       shell: bash
       env:
@@ -231,6 +287,7 @@ runs:
         fi
 
         echo "COMPARE_BASE_SHA=$COMPARE_BASE_SHA" >> "$GITHUB_ENV"
+        echo "compare-base-sha=$COMPARE_BASE_SHA" >> "$GITHUB_OUTPUT"
 
         echo "Comparison baseline: $COMPARE_BASE_SHA"
 
@@ -240,6 +297,7 @@ runs:
     # ============================================================
 
     - name: Create temporary worktrees
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -261,6 +319,7 @@ runs:
     # ============================================================
 
     - name: Prepare repository runtime dependencies
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       env:
         GENERATE_COMMAND: ${{ inputs.generate-command }}
@@ -291,7 +350,8 @@ runs:
             echo "Installing Python project dependencies from repository metadata..."
             "$venv_dir/bin/python" -m pip install "$repo_dir"
           else
-            echo "::error::Python API generation was detected for $label, but no requirements.txt, requirements-dev.txt, pyproject.toml, setup.py, or setup.cfg was found."
+            echo "::error::Python API generation was detected for $label, but no supported Python dependency file was found."
+            echo "::error::Expected requirements.txt, requirements-dev.txt, pyproject.toml, setup.py, or setup.cfg."
             exit 1
           fi
 
@@ -340,6 +400,7 @@ runs:
     # ============================================================
 
     - name: Generate or locate base specification
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       env:
         GENERATE_COMMAND: ${{ inputs.generate-command }}
@@ -372,6 +433,7 @@ runs:
     # ============================================================
 
     - name: Generate or locate head specification
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       env:
         GENERATE_COMMAND: ${{ inputs.generate-command }}
@@ -400,10 +462,11 @@ runs:
 
 
     # ============================================================
-    # 9. Validate JSON specifications
+    # 10. Validate JSON specifications
     # ============================================================
 
     - name: Validate JSON specifications
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -431,10 +494,11 @@ runs:
 
 
     # ============================================================
-    # 10. Build CI payload
+    # 11. Build CI payload
     # ============================================================
 
     - name: Build CI payload
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -446,9 +510,7 @@ runs:
         import sys
 
         if len(sys.argv) != 3:
-            raise SystemExit(
-                "Expected exactly two specification paths."
-            )
+            raise SystemExit("Expected exactly two specification paths.")
 
         base_path = sys.argv[1]
         head_path = sys.argv[2]
@@ -492,11 +554,13 @@ runs:
         print(json.dumps(payload))
         PY
 
+
     # ============================================================
-    # 11. Submit CI analysis
+    # 12. Submit CI analysis
     # ============================================================
 
     - name: Submit CI analysis
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       id: submit
       shell: bash
       env:
@@ -506,6 +570,11 @@ runs:
         set -euo pipefail
 
         RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-submit.json"
+
+        if [[ -z "$TOKEN" ]]; then
+          echo "::error::API Analyzer token is empty."
+          exit 1
+        fi
 
         HTTP_CODE="$(
           curl \
@@ -543,7 +612,6 @@ runs:
 
         echo "COMPARISON_ID=$COMPARISON_ID" >> "$GITHUB_ENV"
         echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
-
         echo "GATE_STATUS=$INITIAL_GATE_STATUS" >> "$GITHUB_ENV"
         echo "REASON_CODE=$INITIAL_REASON_CODE" >> "$GITHUB_ENV"
         echo "REPORT_URL=$INITIAL_REPORT_URL" >> "$GITHUB_ENV"
@@ -574,12 +642,12 @@ runs:
 
 
     # ============================================================
-    # 12. Poll only if analysis is not already terminal
+    # 13. Poll only if analysis is not already terminal
     # ============================================================
 
     - name: Poll analysis status
+      if: ${{ steps.mode.outputs.skip != 'true' && env.ANALYSIS_TERMINAL != 'true' }}
       id: poll
-      if: ${{ env.ANALYSIS_TERMINAL != 'true' }}
       shell: bash
       env:
         API_BASE_URL: ${{ inputs.api-base-url }}
@@ -592,15 +660,24 @@ runs:
         START_TIME="$(date +%s)"
 
         while true; do
-          RESPONSE="$(
+          RESPONSE_CODE="$(
             curl \
               --silent \
               --show-error \
-              --fail \
+              --output "$RUNNER_TEMP/api-analyzer-status.json" \
+              --write-out "%{http_code}" \
               --request GET \
               --header "Authorization: Bearer $TOKEN" \
               "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/"
           )"
+
+          if [[ "$RESPONSE_CODE" != "200" ]]; then
+            echo "::error::API Analyzer status request failed with HTTP $RESPONSE_CODE"
+            cat "$RUNNER_TEMP/api-analyzer-status.json"
+            exit 1
+          fi
+
+          RESPONSE="$(cat "$RUNNER_TEMP/api-analyzer-status.json")"
 
           STATUS="$(echo "$RESPONSE" | jq -r '.status // ""')"
           GATE_STATUS="$(echo "$RESPONSE" | jq -r '.gate_status // ""')"
@@ -626,7 +703,7 @@ runs:
           NOW="$(date +%s)"
           ELAPSED="$((NOW - START_TIME))"
 
-          if (( ELAPSED >= TIMEOUT_SECONDS )); then
+          if (( ELAPSED >= 10#$TIMEOUT_SECONDS )); then
             echo "::error::API Analyzer analysis timed out after ${TIMEOUT_SECONDS}s."
             exit 1
           fi
@@ -636,10 +713,11 @@ runs:
 
 
     # ============================================================
-    # 13. Evaluate CI gate
+    # 14. Evaluate CI gate
     # ============================================================
 
     - name: Evaluate CI gate
+      if: ${{ steps.mode.outputs.skip != 'true' }}
       shell: bash
       env:
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
@@ -671,7 +749,7 @@ runs:
             ;;
 
           error|"")
-            if [[ "$FAIL_ON_ERROR" == "true" ]]; then
+            if [[ "${FAIL_ON_ERROR,,}" == "true" ]]; then
               echo "::error::API compatibility analysis could not complete."
               exit 1
             fi
@@ -688,12 +766,22 @@ runs:
 
 
     # ============================================================
-    # 14. Cleanup worktrees
+    # 15. Cleanup worktrees
     # ============================================================
 
     - name: Cleanup worktrees
       if: always()
       shell: bash
       run: |
-        git worktree remove "$BASE_DIR" --force 2>/dev/null || true
-        git worktree remove "$HEAD_DIR" --force 2>/dev/null || true
+        set -euo pipefail
+
+        BASE_DIR="${BASE_DIR:-}"
+        HEAD_DIR="${HEAD_DIR:-}"
+
+        if [[ -n "$BASE_DIR" && -d "$BASE_DIR" ]]; then
+          git worktree remove "$BASE_DIR" --force 2>/dev/null || true
+        fi
+
+        if [[ -n "$HEAD_DIR" && -d "$HEAD_DIR" ]]; then
+          git worktree remove "$HEAD_DIR" --force 2>/dev/null || true
+        fi
