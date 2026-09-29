@@ -257,7 +257,86 @@ runs:
 
 
     # ============================================================
-    # 7. Generate / locate base specification
+    # 7. Prepare isolated repository runtimes
+    # ============================================================
+
+    - name: Prepare repository runtime dependencies
+      shell: bash
+      env:
+        GENERATE_COMMAND: ${{ inputs.generate-command }}
+      run: |
+        set -euo pipefail
+
+        bootstrap_python() {
+          local repo_dir="$1"
+          local label="$2"
+          local venv_dir="$repo_dir/.api-analyzer-venv"
+          local requirements_file=""
+
+          echo "Preparing Python environment for $label: $repo_dir"
+
+          python -m venv "$venv_dir"
+          "$venv_dir/bin/python" -m pip install --upgrade pip setuptools wheel
+
+          if [[ -f "$repo_dir/requirements.txt" ]]; then
+            requirements_file="$repo_dir/requirements.txt"
+          elif [[ -f "$repo_dir/requirements-dev.txt" ]]; then
+            requirements_file="$repo_dir/requirements-dev.txt"
+          fi
+
+          if [[ -n "$requirements_file" ]]; then
+            echo "Installing Python dependencies from $requirements_file"
+            "$venv_dir/bin/python" -m pip install -r "$requirements_file"
+          elif [[ -f "$repo_dir/pyproject.toml" || -f "$repo_dir/setup.py" || -f "$repo_dir/setup.cfg" ]]; then
+            echo "Installing Python project dependencies from repository metadata..."
+            "$venv_dir/bin/python" -m pip install "$repo_dir"
+          else
+            echo "::error::Python API generation was detected for $label, but no requirements.txt, requirements-dev.txt, pyproject.toml, setup.py, or setup.cfg was found."
+            exit 1
+          fi
+
+          echo "${label^^}_PYTHON_VENV=$venv_dir" >> "$GITHUB_ENV"
+        }
+
+        bootstrap_node() {
+          local repo_dir="$1"
+          local label="$2"
+
+          echo "Preparing Node.js dependencies for $label: $repo_dir"
+
+          if [[ -f "$repo_dir/package-lock.json" || -f "$repo_dir/npm-shrinkwrap.json" ]]; then
+            (cd "$repo_dir" && npm ci --no-audit --no-fund)
+          elif [[ -f "$repo_dir/package.json" ]]; then
+            (cd "$repo_dir" && npm install --no-audit --no-fund)
+          else
+            echo "::error::Node.js API generation was detected for $label, but package.json was not found."
+            exit 1
+          fi
+        }
+
+        prepare_runtime() {
+          local repo_dir="$1"
+          local label="$2"
+
+          if [[ -f "$repo_dir/manage.py" || "$GENERATE_COMMAND" == *"manage.py"* ]]; then
+            bootstrap_python "$repo_dir" "$label"
+            return
+          fi
+
+          if [[ -f "$repo_dir/package.json" || "$GENERATE_COMMAND" == *"npm "* || "$GENERATE_COMMAND" == *"npx "* ]]; then
+            bootstrap_node "$repo_dir" "$label"
+            return
+          fi
+
+          echo "No repository-local dependency bootstrap required for $label."
+        }
+
+        prepare_runtime "$BASE_DIR" "base"
+        prepare_runtime "$HEAD_DIR" "head"
+
+
+    # ============================================================
+    # 8. Generate / locate base specification
     # ============================================================
 
     - name: Generate or locate base specification
@@ -272,6 +351,11 @@ runs:
 
         if [[ -n "$GENERATE_COMMAND" ]]; then
           echo "Generating base OpenAPI specification..."
+
+          if [[ -n "${BASE_PYTHON_VENV:-}" ]]; then
+            source "$BASE_PYTHON_VENV/bin/activate"
+          fi
+
           eval "$GENERATE_COMMAND"
         fi
 
@@ -284,7 +368,7 @@ runs:
 
 
     # ============================================================
-    # 8. Generate / locate head specification
+    # 9. Generate / locate head specification
     # ============================================================
 
     - name: Generate or locate head specification
@@ -299,6 +383,11 @@ runs:
 
         if [[ -n "$GENERATE_COMMAND" ]]; then
           echo "Generating head OpenAPI specification..."
+
+          if [[ -n "${HEAD_PYTHON_VENV:-}" ]]; then
+            source "$HEAD_PYTHON_VENV/bin/activate"
+          fi
+
           eval "$GENERATE_COMMAND"
         fi
 
@@ -402,49 +491,9 @@ runs:
 
         print(json.dumps(payload))
         PY
+
     # ============================================================
-    # 11. Wake/check API Analyzer backend
-    # ============================================================
-
-    - name: Wake/check API Analyzer backend
-      shell: bash
-      env:
-        API_BASE_URL: ${{ inputs.api-base-url }}
-      run: |
-        set -euo pipefail
-
-        HEALTH_URL="${API_BASE_URL%/}/api/health/"
-        echo "Checking API Analyzer backend: $HEALTH_URL"
-
-        for attempt in {1..10}; do
-          HTTP_CODE="$(
-            curl \
-              --silent \
-              --show-error \
-              --output /dev/null \
-              --write-out "%{http_code}" \
-              --request GET \
-              --connect-timeout 10 \
-              --max-time 30 \
-              "$HEALTH_URL" || true
-          )"
-
-          if [[ "$HTTP_CODE" == "200" ]]; then
-            echo "API Analyzer backend is healthy."
-            exit 0
-          fi
-
-          echo "Health check attempt $attempt/10 failed with HTTP $HTTP_CODE."
-
-          if [[ "$attempt" -lt 10 ]]; then
-            sleep 5
-          fi
-        done
-
-        echo "::error::API Analyzer backend did not become healthy."
-        exit 1
-    # ============================================================
-    # 12. Submit CI analysis
+    # 11. Submit CI analysis
     # ============================================================
 
     - name: Submit CI analysis
@@ -457,43 +506,27 @@ runs:
         set -euo pipefail
 
         RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-submit.json"
-        MAX_SUBMIT_ATTEMPTS=4
-        SUBMIT_RETRY_DELAY=5
 
-        for attempt in $(seq 1 "$MAX_SUBMIT_ATTEMPTS"); do
-          HTTP_CODE="$(
-            curl \
-              --silent \
-              --show-error \
-              --output "$RESPONSE_FILE" \
-              --write-out "%{http_code}" \
-              --request POST \
-              --connect-timeout 10 \
-              --max-time 60 \
-              --header "Authorization: Bearer $TOKEN" \
-              --header "Content-Type: application/json" \
-              --data @"$RUNNER_TEMP/api-analyzer-payload.json" \
-              "${API_BASE_URL%/}/api/ci/analyze" || true
-          )"
+        HTTP_CODE="$(
+          curl \
+            --silent \
+            --show-error \
+            --output "$RESPONSE_FILE" \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/json" \
+            --data @"$RUNNER_TEMP/api-analyzer-payload.json" \
+            "${API_BASE_URL%/}/api/ci/analyze"
+        )"
 
-          echo "Submission attempt $attempt/$MAX_SUBMIT_ATTEMPTS returned HTTP $HTTP_CODE"
+        echo "HTTP status: $HTTP_CODE"
 
-          if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "202" ]]; then
-            break
-          fi
-
-          if [[ "$HTTP_CODE" == "429" || "$HTTP_CODE" =~ ^5[0-9][0-9]$ || -z "$HTTP_CODE" || "$HTTP_CODE" == "000" ]]; then
-            if [[ "$attempt" -lt "$MAX_SUBMIT_ATTEMPTS" ]]; then
-              echo "Transient analyzer submission failure. Retrying in ${SUBMIT_RETRY_DELAY}s..."
-              sleep "$SUBMIT_RETRY_DELAY"
-              continue
-            fi
-          fi
-
-          echo "::error::API Analyzer submission failed with HTTP ${HTTP_CODE:-unknown}"
-          cat "$RESPONSE_FILE" 2>/dev/null || true
+        if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "202" ]]; then
+          echo "::error::API Analyzer submission failed with HTTP $HTTP_CODE"
+          cat "$RESPONSE_FILE"
           exit 1
-        done
+        fi
 
         COMPARISON_ID="$(jq -r '.comparison_id // empty' "$RESPONSE_FILE")"
         JOB_ID="$(jq -r '.job_id // empty' "$RESPONSE_FILE")"
@@ -539,8 +572,9 @@ runs:
             ;;
         esac
 
+
     # ============================================================
-    # 13. Poll only if analysis is not already terminal
+    # 12. Poll only if analysis is not already terminal
     # ============================================================
 
     - name: Poll analysis status
@@ -556,52 +590,17 @@ runs:
         set -euo pipefail
 
         START_TIME="$(date +%s)"
-        STATUS_RESPONSE_FILE="$RUNNER_TEMP/api-analyzer-status.json"
-
-        # Retry only transient transport/server failures.
-        # Authentication/configuration errors fail immediately.
-        MAX_STATUS_RETRIES=6
-        STATUS_RETRY_DELAY=5
-        CONSECUTIVE_STATUS_FAILURES=0
 
         while true; do
-          HTTP_CODE="$(
+          RESPONSE="$(
             curl \
               --silent \
               --show-error \
-              --output "$STATUS_RESPONSE_FILE" \
-              --write-out "%{http_code}" \
+              --fail \
               --request GET \
-              --connect-timeout 10 \
-              --max-time 30 \
               --header "Authorization: Bearer $TOKEN" \
-              "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/" || true
+              "${API_BASE_URL%/}/api/ci/comparisons/${COMPARISON_ID}/status/"
           )"
-
-          if [[ "$HTTP_CODE" == "200" ]]; then
-            CONSECUTIVE_STATUS_FAILURES=0
-          else
-            if [[ "$HTTP_CODE" == "429" || "$HTTP_CODE" =~ ^5[0-9][0-9]$ || -z "$HTTP_CODE" || "$HTTP_CODE" == "000" ]]; then
-              CONSECUTIVE_STATUS_FAILURES=$((CONSECUTIVE_STATUS_FAILURES + 1))
-
-              echo "Transient status-check failure: HTTP ${HTTP_CODE:-unknown} (attempt ${CONSECUTIVE_STATUS_FAILURES}/${MAX_STATUS_RETRIES})"
-
-              if (( CONSECUTIVE_STATUS_FAILURES < MAX_STATUS_RETRIES )); then
-                sleep "$STATUS_RETRY_DELAY"
-                continue
-              fi
-
-              echo "::error::API Analyzer status endpoint remained unavailable after ${MAX_STATUS_RETRIES} consecutive attempts."
-              cat "$STATUS_RESPONSE_FILE" 2>/dev/null || true
-              exit 1
-            fi
-
-            echo "::error::API Analyzer status check failed with HTTP $HTTP_CODE."
-            cat "$STATUS_RESPONSE_FILE" 2>/dev/null || true
-            exit 1
-          fi
-
-          RESPONSE="$(cat "$STATUS_RESPONSE_FILE")"
 
           STATUS="$(echo "$RESPONSE" | jq -r '.status // ""')"
           GATE_STATUS="$(echo "$RESPONSE" | jq -r '.gate_status // ""')"
@@ -635,8 +634,9 @@ runs:
           sleep "$POLL_INTERVAL"
         done
 
+
     # ============================================================
-    # 14. Evaluate CI gate
+    # 13. Evaluate CI gate
     # ============================================================
 
     - name: Evaluate CI gate
@@ -688,7 +688,7 @@ runs:
 
 
     # ============================================================
-    # 15. Cleanup worktrees
+    # 14. Cleanup worktrees
     # ============================================================
 
     - name: Cleanup worktrees
