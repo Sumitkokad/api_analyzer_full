@@ -128,7 +128,157 @@ function readSession() {
 
 function normalizeList(data) {
   if (Array.isArray(data)) return data
-  return data?.results || []
+  if (Array.isArray(data?.results)) return data.results
+  return []
+}
+
+class ApiRequestError extends Error {
+  constructor(message, { status = 0, payload = null, path = '' } = {}) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.payload = payload
+    this.path = path
+  }
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function buildApiErrorMessage(payload, status) {
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload.trim()
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return `Request failed with status ${status}.`
+  }
+
+  if (payload.detail) return String(payload.detail)
+  if (payload.message) return String(payload.message)
+
+  const messages = []
+  Object.entries(payload).forEach(([field, value]) => {
+    if (value === undefined || value === null || value === '') return
+
+    if (Array.isArray(value)) {
+      const rendered = value
+        .map((item) => {
+          if (item && typeof item === 'object') return safeJsonStringify(item)
+          return String(item)
+        })
+        .join(' ')
+      if (rendered) messages.push(`${field}: ${rendered}`)
+      return
+    }
+
+    if (value && typeof value === 'object') {
+      messages.push(`${field}: ${safeJsonStringify(value)}`)
+      return
+    }
+
+    messages.push(`${field}: ${String(value)}`)
+  })
+
+  return messages.length
+    ? messages.join(' | ')
+    : `Request failed with status ${status}.`
+}
+
+function sortNewestFirst(items) {
+  return [...items].sort((a, b) => {
+    const aTime = new Date(a?.updated_at || a?.created_at || 0).getTime()
+    const bTime = new Date(b?.updated_at || b?.created_at || 0).getTime()
+
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) {
+      return bTime - aTime
+    }
+
+    return Number(b?.id || 0) - Number(a?.id || 0)
+  })
+}
+
+function validateOpenApiDocument(document) {
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    return { ok: false, message: 'Specification must be a JSON object.' }
+  }
+
+  const openapiVersion = String(document.openapi || '').trim()
+  const swaggerVersion = String(document.swagger || '').trim()
+
+  if (!openapiVersion && !swaggerVersion) {
+    return { ok: false, message: "Specification must declare 'openapi' or 'swagger'." }
+  }
+
+  if (openapiVersion && !openapiVersion.startsWith('3.')) {
+    return { ok: false, message: `Unsupported OpenAPI version '${openapiVersion}'.` }
+  }
+
+  if (!openapiVersion && swaggerVersion !== '2.0') {
+    return { ok: false, message: `Unsupported Swagger version '${swaggerVersion}'.` }
+  }
+
+  if (!document.info || typeof document.info !== 'object' || Array.isArray(document.info)) {
+    return { ok: false, message: "Specification must contain an 'info' object." }
+  }
+
+  if (!document.paths || typeof document.paths !== 'object' || Array.isArray(document.paths)) {
+    return { ok: false, message: "Specification must contain a 'paths' object." }
+  }
+
+  return {
+    ok: true,
+    type: openapiVersion ? 'openapi' : 'swagger',
+    version: openapiVersion || swaggerVersion,
+  }
+}
+
+function normalizeRepositoryName(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function normalizeScanPayload(scan) {
+  if (!scan || typeof scan !== 'object') return null
+
+  const framework = scan.framework && typeof scan.framework === 'object'
+    ? scan.framework
+    : {}
+  const contract = scan.contract && typeof scan.contract === 'object'
+    ? scan.contract
+    : {}
+
+  return {
+    ...scan,
+    repository: String(scan.repository || '').trim(),
+    default_branch: String(scan.default_branch || '').trim(),
+    commit_sha: String(scan.commit_sha || '').trim(),
+    framework: {
+      ...framework,
+      detected: Boolean(framework.detected),
+      adapter_type: String(framework.adapter_type || '').trim(),
+      name: String(framework.name || '').trim(),
+      language: String(framework.language || '').trim(),
+      confidence: String(framework.confidence || '').trim(),
+      evidence: Array.isArray(framework.evidence)
+        ? framework.evidence.map((item) => String(item)).filter(Boolean)
+        : [],
+    },
+    contract: {
+      ...contract,
+      found: Boolean(contract.found),
+      path: String(contract.path || '').trim(),
+      type: String(contract.type || '').trim(),
+      confidence: String(contract.confidence || '').trim(),
+    },
+    warnings: Array.isArray(scan.warnings)
+      ? scan.warnings.map((item) => String(item)).filter(Boolean)
+      : [],
+  }
 }
 
 function normalizeCompatibility(value) {
@@ -247,37 +397,6 @@ function getProjectName(projects, projectId) {
   return match?.name || (projectId ? `Project #${projectId}` : '—')
 }
 
-function maskSecret(value) {
-  const text = String(value || '')
-  if (!text) return ''
-  if (text.length <= 12) return '••••••••••••'
-  return `${text.slice(0, 5)}${'•'.repeat(Math.max(8, Math.min(24, text.length - 10)))}${text.slice(-5)}`
-}
-
-function githubConfigKey(projectId) {
-  return `apiAnalyzerGithubCI:v2:${projectId || 'none'}`
-}
-
-function readGithubConfig(projectId) {
-  if (!projectId) return {}
-
-  try {
-    const value = localStorage.getItem(githubConfigKey(projectId))
-    return value ? JSON.parse(value) : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeGithubConfig(projectId, config) {
-  if (!projectId) return
-
-  try {
-    localStorage.setItem(githubConfigKey(projectId), JSON.stringify(config))
-  } catch {
-    // Local draft persistence is optional; never block CI setup if storage is unavailable.
-  }
-}
 
 const VALID_ROUTES = new Set([
   'login',
@@ -480,6 +599,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [runPhase, setRunPhase] = useState(null)
   const [demoModalOpen, setDemoModalOpen] = useState(false)
+  const noticeTimerRef = useRef(null)
   const authed = Boolean(session.token)
   const route = routeLocation.route
   const routeParams = routeLocation.params
@@ -498,12 +618,27 @@ export default function App() {
     }
   }, [])
 
-  const showNotice = (text, type = 'info') => {
-    setNotice({ text, type })
-    if (type !== 'error') {
-      window.setTimeout(() => setNotice({ text: '', type: 'info' }), 6000)
+  const showNotice = useCallback((text, type = 'info') => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current)
+      noticeTimerRef.current = null
     }
-  }
+
+    setNotice({ text: String(text || ''), type })
+
+    if (type !== 'error' && text) {
+      noticeTimerRef.current = window.setTimeout(() => {
+        setNotice({ text: '', type: 'info' })
+        noticeTimerRef.current = null
+      }, 6000)
+    }
+  }, [])
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (authed) return
@@ -575,7 +710,10 @@ export default function App() {
 
   const apiFetch = useCallback(async (path, options = {}) => {
     if (!API_BASE) {
-      throw new Error('API base URL is not configured. Set VITE_API_BASE_URL for this frontend deployment.')
+      throw new ApiRequestError(
+        'API base URL is not configured. Set VITE_API_BASE_URL for this frontend deployment.',
+        { path: String(path || '') },
+      )
     }
 
     const controller = new AbortController()
@@ -589,16 +727,32 @@ export default function App() {
 
     if (session.token) headers.set('Authorization', `Token ${session.token}`)
 
+    const method = String(options.method || 'GET').toUpperCase()
+    const requestOptions = {
+      ...options,
+      headers,
+      signal: controller.signal,
+    }
+
+    if (method === 'GET' && !requestOptions.cache) {
+      requestOptions.cache = 'no-store'
+    }
+
     try {
-      const response = await fetch(`${API_BASE}${path}`, {
-        ...options,
-        headers,
-        signal: controller.signal,
-      })
+      const response = await fetch(`${API_BASE}${path}`, requestOptions)
 
       if (response.status === 204) return null
 
-      const data = await response.json().catch(() => ({}))
+      const rawText = await response.text().catch(() => '')
+      let data = null
+
+      if (rawText.trim()) {
+        try {
+          data = JSON.parse(rawText)
+        } catch {
+          data = rawText
+        }
+      }
 
       if (!response.ok) {
         if (response.status === 401 && !String(path).startsWith('/auth/')) {
@@ -612,38 +766,25 @@ export default function App() {
           setSession({ token: null, user: null })
           navigateTo('login')
 
-          throw new Error('Your session expired. Please sign in again.')
+          throw new ApiRequestError(
+            'Your session expired. Please sign in again.',
+            { status: response.status, payload: data, path: String(path || '') },
+          )
         }
 
-        let errorMsg = `Request failed with status ${response.status}.`
-
-        if (typeof data === 'string' && data.trim()) {
-          errorMsg = data
-        } else if (data?.detail) {
-          errorMsg = String(data.detail)
-        } else if (data && typeof data === 'object') {
-          const messages = []
-
-          Object.entries(data).forEach(([field, value]) => {
-            if (Array.isArray(value)) {
-              messages.push(`${field}: ${value.join(' ')}`)
-            } else if (value && typeof value === 'object') {
-              messages.push(`${field}: ${JSON.stringify(value)}`)
-            } else if (value) {
-              messages.push(`${field}: ${value}`)
-            }
-          })
-
-          if (messages.length) errorMsg = messages.join(' | ')
-        }
-
-        throw new Error(errorMsg)
+        throw new ApiRequestError(
+          buildApiErrorMessage(data, response.status),
+          { status: response.status, payload: data, path: String(path || '') },
+        )
       }
 
       return data
     } catch (error) {
       if (error?.name === 'AbortError') {
-        throw new Error('Request timed out. Check the analyzer backend and try again.')
+        throw new ApiRequestError(
+          'Request timed out. Check the analyzer backend and try again.',
+          { path: String(path || '') },
+        )
       }
       throw error
     } finally {
@@ -651,50 +792,77 @@ export default function App() {
     }
   }, [session.token])
 
-  const refreshData = useCallback(async () => {
-    setLoading(true)
+  const refreshData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true)
+
     try {
-      const [projectData, comparisonData, jobData] = await Promise.all([
+      const results = await Promise.allSettled([
         apiFetch('/projects/'),
         apiFetch('/comparisons/'),
         apiFetch('/analysis-jobs/'),
       ])
-      setProjects(normalizeList(projectData))
-      const nextComparisons = normalizeList(comparisonData)
-      setComparisons(nextComparisons)
-      setJobs(normalizeList(jobData))
-      setActiveComparison((current) => {
-        if (!current && nextComparisons.length) return nextComparisons[0]
-        if (current) {
-          const matched = nextComparisons.find((c) => String(c.id) === String(current.id))
-          return matched || nextComparisons[0] || null
-        }
-        return null
-      })
-    } catch (error) {
-      showNotice(error.message, 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [apiFetch])
 
-  const refreshComparisons = useCallback(async () => {
+      const [projectResult, comparisonResult, jobResult] = results
+      const failures = []
+
+      if (projectResult.status === 'fulfilled') {
+        setProjects(sortNewestFirst(normalizeList(projectResult.value)))
+      } else {
+        failures.push('projects')
+      }
+
+      if (comparisonResult.status === 'fulfilled') {
+        const nextComparisons = sortNewestFirst(normalizeList(comparisonResult.value))
+        setComparisons(nextComparisons)
+        setActiveComparison((current) => {
+          if (current) {
+            const matched = nextComparisons.find((item) => String(item.id) === String(current.id))
+            return matched || nextComparisons[0] || null
+          }
+          return nextComparisons[0] || null
+        })
+      } else {
+        failures.push('comparisons')
+      }
+
+      if (jobResult.status === 'fulfilled') {
+        setJobs(sortNewestFirst(normalizeList(jobResult.value)))
+      } else {
+        failures.push('analysis jobs')
+      }
+
+      if (failures.length && !silent) {
+        showNotice(
+          `Some workspace data could not be refreshed: ${failures.join(', ')}.`,
+          'error',
+        )
+      }
+    } finally {
+      if (!silent) setLoading(false)
+    }
+  }, [apiFetch, showNotice])
+
+  const refreshComparisons = useCallback(async ({ silent = true } = {}) => {
     try {
       const comparisonData = await apiFetch('/comparisons/')
-      const nextComparisons = normalizeList(comparisonData)
+      const nextComparisons = sortNewestFirst(normalizeList(comparisonData))
       setComparisons(nextComparisons)
       setActiveComparison((current) => {
-        if (!current && nextComparisons.length) return nextComparisons[0]
         if (current) {
           const matched = nextComparisons.find((comparison) => String(comparison.id) === String(current.id))
           return matched || nextComparisons[0] || null
         }
-        return null
+        return nextComparisons[0] || null
       })
     } catch (error) {
-      setNotice({ text: error.message || 'Unable to refresh comparison status.', type: 'error' })
+      if (!silent) {
+        showNotice(
+          error.message || 'Unable to refresh comparison status.',
+          'error',
+        )
+      }
     }
-  }, [apiFetch])
+  }, [apiFetch, showNotice])
 
   useEffect(() => {
     if (!authed) return undefined
@@ -712,9 +880,17 @@ export default function App() {
         body: JSON.stringify(payload),
       })
 
-      localStorage.setItem('apiAnalyzerToken', data.token)
+      const authToken = String(data?.token || '').trim()
+      if (!authToken || !data?.user) {
+        throw new ApiRequestError(
+          'Authentication succeeded but the server returned an incomplete session.',
+          { payload: data },
+        )
+      }
+
+      localStorage.setItem('apiAnalyzerToken', authToken)
       localStorage.setItem('apiAnalyzerUser', JSON.stringify(data.user))
-      setSession({ token: data.token, user: data.user })
+      setSession({ token: authToken, user: data.user })
 
       const pending = readPendingAuthRoute()
       clearPendingAuthRoute()
@@ -797,22 +973,49 @@ export default function App() {
             throw new Error('Project name is required.')
           }
 
-          const project = await apiFetch('/projects/', {
-            method: 'POST',
-            body: JSON.stringify({
-              name: requestedName,
-              description: 'Created from OpenAPI Analyzer pipeline.',
-            }),
-          })
+          try {
+            const project = await apiFetch('/projects/', {
+              method: 'POST',
+              body: JSON.stringify({
+                name: requestedName,
+                description: 'Created from OpenAPI Analyzer pipeline.',
+              }),
+            })
 
-          projectId = project.id
+            projectId = project?.id
+            if (!projectId) throw new ApiRequestError('Project creation returned no project ID.')
 
-          setProjects((current) => {
-            const alreadyExists = current.some(
-              (item) => String(item.id) === String(project.id)
+            setProjects((current) => {
+              const alreadyExists = current.some(
+                (item) => String(item.id) === String(project.id)
+              )
+              return alreadyExists ? current : [...current, project]
+            })
+          } catch (createError) {
+            // The backend enforces owner/name uniqueness. Only retry the
+            // read-after-write lookup for validation/conflict responses; a
+            // timeout or 5xx should remain the original error.
+            const retryableCreate =
+              createError?.status === 400 ||
+              createError?.status === 409
+
+            if (!retryableCreate) throw createError
+
+            const latestProjects = sortNewestFirst(
+              normalizeList(await apiFetch('/projects/')),
             )
-            return alreadyExists ? current : [...current, project]
-          })
+            const racedProject = latestProjects.find(
+              (project) =>
+                String(project.name || '').trim().toLowerCase() ===
+                requestedName.toLowerCase()
+            )
+
+            if (!racedProject) throw createError
+
+            setProjects(latestProjects)
+            projectId = racedProject.id
+          }
+
         }
       }
 
@@ -822,45 +1025,59 @@ export default function App() {
       let newContent
 
       try {
-        oldContent = JSON.parse(form.oldSpec)
+        oldContent = JSON.parse(String(form.oldSpec || ''))
       } catch {
-        throw new Error('Baseline specification is not valid JSON.')
+        throw new ApiRequestError('Baseline specification is not valid JSON.')
       }
 
       try {
-        newContent = JSON.parse(form.newSpec)
+        newContent = JSON.parse(String(form.newSpec || ''))
       } catch {
-        throw new Error('Proposed specification is not valid JSON.')
+        throw new ApiRequestError('Proposed specification is not valid JSON.')
+      }
+
+      const oldValidation = validateOpenApiDocument(oldContent)
+      if (!oldValidation.ok) {
+        throw new ApiRequestError(`Baseline specification: ${oldValidation.message}`)
+      }
+
+      const newValidation = validateOpenApiDocument(newContent)
+      if (!newValidation.ok) {
+        throw new ApiRequestError(`Proposed specification: ${newValidation.message}`)
+      }
+
+      const oldName = String(form.oldName || '').trim()
+      const newName = String(form.newName || '').trim()
+      if (!oldName || !newName) {
+        throw new ApiRequestError('Both specification labels are required.')
       }
 
       const oldSpec = await apiFetch('/specifications/', {
         method: 'POST',
         body: JSON.stringify({
           project: projectId,
-          name: form.oldName,
+          name: oldName,
           version:
-            form.oldVersion ||
-            oldContent.info?.version ||
+            String(form.oldVersion || '').trim() ||
+            String(oldContent.info?.version || '').trim() ||
             '1.0.0',
           content: oldContent,
-          raw_text: form.oldSpec,
+          raw_text: String(form.oldSpec || ''),
         }),
       })
-
       const newSpec = await apiFetch('/specifications/', {
         method: 'POST',
         body: JSON.stringify({
           project: projectId,
-          name: form.newName,
+          name: newName,
           version:
-            form.newVersion ||
-            newContent.info?.version ||
+            String(form.newVersion || '').trim() ||
+            String(newContent.info?.version || '').trim() ||
             '2.0.0',
           content: newContent,
-          raw_text: form.newSpec,
+          raw_text: String(form.newSpec || ''),
         }),
       })
-
       setRunPhase('comparison')
 
       const comparison = await apiFetch('/comparisons/', {
@@ -871,7 +1088,6 @@ export default function App() {
           new_specification: newSpec.id,
         }),
       })
-
       setActiveComparison(comparison)
       rememberLastProject(projectId)
 
@@ -884,7 +1100,12 @@ export default function App() {
       navigateTo('dashboard')
     } catch (error) {
       console.error('Compatibility audit failed:', error)
-      showNotice(error.message, 'error')
+
+      // Do not attempt destructive rollback here: a network timeout after a
+      // successful POST cannot tell the browser whether the server persisted
+      // the resource. The backend remains the source of truth.
+
+      showNotice(error.message || 'Compatibility audit failed.', 'error')
     } finally {
       setLoading(false)
       setRunPhase(null)
@@ -892,9 +1113,29 @@ export default function App() {
   }
 
 
+  const createJobInFlightRef = useRef(false)
+
   async function createJob(comparisonId) {
+    if (createJobInFlightRef.current) return
+
     const comparison = comparisons.find((item) => String(item.id) === String(comparisonId))
-    if (!comparison) return
+    if (!comparison) {
+      showNotice('Select a comparison before dispatching an analysis job.', 'error')
+      return
+    }
+
+    const activeJob = jobs.find((job) => {
+      const status = String(job.status || '').toLowerCase()
+      return String(job.comparison) === String(comparison.id) &&
+        (status === 'queued' || status === 'running')
+    })
+
+    if (activeJob) {
+      showNotice(`Comparison #${comparison.id} already has an active analysis job (#${activeJob.id}).`, 'info')
+      return
+    }
+
+    createJobInFlightRef.current = true
     setLoading(true)
     try {
       const job = await apiFetch('/analysis-jobs/', {
@@ -906,6 +1147,7 @@ export default function App() {
     } catch (error) {
       showNotice(error.message, 'error')
     } finally {
+      createJobInFlightRef.current = false
       setLoading(false)
     }
   }
@@ -934,7 +1176,7 @@ export default function App() {
     )
   }
 
-  const latestComparison = activeComparison || comparisons[0]
+  const latestComparison = activeComparison || sortNewestFirst(comparisons)[0]
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: IconDashboard },
@@ -1117,6 +1359,7 @@ export default function App() {
             jobs={jobs}
             comparisons={comparisons}
             onCreateJob={createJob}
+            onRefresh={refreshData}
           />
         )}
 
@@ -1891,6 +2134,9 @@ function GitHubCIPage({
   })
 
   const [repository, setRepository] = useState('')
+  const [repositorySearch, setRepositorySearch] = useState('')
+  const [repositoryPage, setRepositoryPage] = useState(1)
+  const [repositoryTotal, setRepositoryTotal] = useState(0)
   const [githubConnection, setGithubConnection] = useState({
     connected: false,
     installation_connected: false,
@@ -1900,77 +2146,112 @@ function GitHubCIPage({
   })
   const [githubRepositories, setGithubRepositories] = useState([])
   const [githubLoading, setGithubLoading] = useState(false)
+  const [repositoriesLoading, setRepositoriesLoading] = useState(false)
   const [githubConnecting, setGithubConnecting] = useState(false)
   const [repositoryConnecting, setRepositoryConnecting] = useState(false)
+  const [scanLoading, setScanLoading] = useState(false)
+  const [scanResult, setScanResult] = useState(null)
+  const [scanError, setScanError] = useState('')
   const [setupLoading, setSetupLoading] = useState(false)
   const [githubError, setGithubError] = useState('')
   const [setupResult, setSetupResult] = useState(null)
   const [setupError, setSetupError] = useState('')
+  const [setupErrorDetails, setSetupErrorDetails] = useState(null)
+
+  const githubLoadRequestRef = useRef(0)
+  const scanRequestRef = useRef(0)
+  const setupRequestRef = useRef(0)
+
+  const currentProjectExists = projects.some(
+    (project) => String(project.id) === String(projectId),
+  )
 
   useEffect(() => {
-    const preferred =
-      routeProjectId ||
-      preferredProjectId ||
-      projectId ||
-      projects[0]?.id ||
-      ''
-
-    if (preferred && String(preferred) !== String(projectId)) {
-      setProjectId(preferred)
-    } else if (!projectId && preferred) {
-      setProjectId(preferred)
+    if (routeProjectId) {
+      if (String(routeProjectId) !== String(projectId)) {
+        setProjectId(String(routeProjectId))
+      }
+      return
     }
-  }, [routeProjectId, preferredProjectId, projects, projectId])
+
+    if (!currentProjectExists) {
+      const fallback = preferredProjectId || projects[0]?.id || ''
+      if (fallback && String(fallback) !== String(projectId)) {
+        setProjectId(String(fallback))
+      }
+    }
+  }, [routeProjectId, preferredProjectId, projects, projectId, currentProjectExists])
 
   const selectedProject = projects.find(
     (project) => String(project.id) === String(projectId),
   )
 
+  const repositoryOptions = useMemo(() => {
+    const byName = new Map()
+    githubRepositories.forEach((item) => {
+      const fullName = String(item?.full_name || '').trim()
+      if (fullName) byName.set(normalizeRepositoryName(fullName), item)
+    })
+
+    const connectedName = String(githubConnection.repository_full_name || '').trim()
+    if (connectedName && !byName.has(normalizeRepositoryName(connectedName))) {
+      byName.set(normalizeRepositoryName(connectedName), {
+        id: `connected:${connectedName}`,
+        full_name: connectedName,
+        name: connectedName.split('/').pop() || connectedName,
+        default_branch: selectedProject?.default_branch || 'main',
+        private: null,
+      })
+    }
+
+    return [...byName.values()]
+  }, [githubRepositories, githubConnection.repository_full_name, selectedProject?.default_branch])
+
+  const filteredRepositories = useMemo(() => {
+    const query = repositorySearch.trim().toLowerCase()
+    if (!query) return repositoryOptions
+
+    const matches = repositoryOptions.filter((item) =>
+      String(item.full_name || '').toLowerCase().includes(query),
+    )
+    const selected = repositoryOptions.find(
+      (item) => normalizeRepositoryName(item.full_name) === normalizeRepositoryName(repository),
+    )
+
+    if (selected && !matches.some((item) => item.id === selected.id)) {
+      return [selected, ...matches]
+    }
+
+    return matches
+  }, [repositoryOptions, repositorySearch, repository])
+
   const selectedGithubRepository = useMemo(
     () =>
-      githubRepositories.find(
+      repositoryOptions.find(
         (item) =>
-          String(item.full_name || '').toLowerCase() ===
-          String(repository || '').toLowerCase(),
+          normalizeRepositoryName(item.full_name) ===
+          normalizeRepositoryName(repository),
       ) || null,
-    [githubRepositories, repository],
+    [repositoryOptions, repository],
   )
 
   const connectedRuns = useMemo(() => {
     const projectMatches = comparisons.filter(
-      (comparison) =>
-        String(comparison.project) === String(projectId),
+      (comparison) => String(comparison.project) === String(projectId),
     )
 
-    const normalizedRepo = repository.trim().toLowerCase()
+    const normalizedRepo = normalizeRepositoryName(repository)
 
-    return projectMatches
-      .filter((comparison) => {
+    return sortNewestFirst(
+      projectMatches.filter((comparison) => {
         if (!normalizedRepo) return true
-
-        return (
-          String(comparison.repository || '').toLowerCase() ===
-          normalizedRepo
-        )
-      })
-      .sort((a, b) => {
-        const aTime = new Date(
-          a.updated_at || a.created_at || 0,
-        ).getTime()
-
-        const bTime = new Date(
-          b.updated_at || b.created_at || 0,
-        ).getTime()
-
-        return bTime - aTime
-      })
+        return normalizeRepositoryName(comparison.repository) === normalizedRepo
+      }),
+    )
   }, [comparisons, projectId, repository])
 
   const activeRunExists = connectedRuns.some((comparison) => {
-    const status = String(
-      comparison.status || '',
-    ).toLowerCase()
-
+    const status = String(comparison.status || '').toLowerCase()
     return status === 'queued' || status === 'running'
   })
 
@@ -1978,15 +2259,116 @@ function GitHubCIPage({
     if (!activeRunExists || !onRefresh) return undefined
 
     const timer = window.setInterval(
-      () => onRefresh(),
-      10000,
+      () => onRefresh({ silent: true }),
+      7000,
     )
 
     return () => window.clearInterval(timer)
   }, [activeRunExists, onRefresh])
 
+  const loadRepositories = useCallback(
+    async (selectedProjectId, { page = 1, append = false } = {}) => {
+      if (!selectedProjectId) return
+
+      setRepositoriesLoading(true)
+      try {
+        const repositoryData = await apiFetch(
+          `/github/repositories/?project_id=${selectedProjectId}&page=${page}&per_page=100`,
+        )
+
+        const repositories = Array.isArray(repositoryData?.repositories)
+          ? repositoryData.repositories
+          : []
+        const totalCount = Number(repositoryData?.total_count)
+        const normalizedTotal = Number.isFinite(totalCount) && totalCount >= 0
+          ? totalCount
+          : (append ? githubRepositories.length + repositories.length : repositories.length)
+
+        setGithubRepositories((current) => {
+          if (!append) return repositories
+
+          const byName = new Map()
+          ;[...current, ...repositories].forEach((item) => {
+            const key = normalizeRepositoryName(item?.full_name)
+            if (key) byName.set(key, item)
+          })
+          return [...byName.values()]
+        })
+        setRepositoryPage(page)
+        setRepositoryTotal(normalizedTotal)
+        setGithubError('')
+      } catch (error) {
+        setGithubError(
+          error.message || 'Unable to load GitHub repositories.',
+        )
+      } finally {
+        setRepositoriesLoading(false)
+      }
+    },
+    [apiFetch, githubRepositories.length],
+  )
+
+  const scanRepository = useCallback(
+    async (selectedProjectId, selectedRepository) => {
+      if (!selectedProjectId || !selectedRepository) {
+        setScanResult(null)
+        setScanError('')
+        return null
+      }
+
+      const requestId = ++scanRequestRef.current
+      setScanLoading(true)
+      setScanError('')
+
+      try {
+        const data = await apiFetch('/github/repository/scan/', {
+          method: 'POST',
+          body: JSON.stringify({
+            project_id: selectedProjectId,
+            repository_full_name: selectedRepository,
+          }),
+        })
+
+        const normalized = normalizeScanPayload(data)
+        if (!normalized) throw new ApiRequestError('The repository scan returned an invalid response.')
+
+        if (requestId !== scanRequestRef.current) return null
+
+        if (
+          normalized.repository &&
+          normalizeRepositoryName(normalized.repository) !== normalizeRepositoryName(selectedRepository)
+        ) {
+          throw new ApiRequestError('The repository scan returned data for a different repository.')
+        }
+
+        setScanResult(normalized)
+        return normalized
+      } catch (error) {
+        if (requestId !== scanRequestRef.current) return null
+
+        const payload = error?.payload && typeof error.payload === 'object'
+          ? error.payload
+          : null
+        const payloadScan = normalizeScanPayload(payload?.scan)
+
+        if (payloadScan) setScanResult(payloadScan)
+        setScanError(error.message || 'Unable to scan the selected repository.')
+        return null
+      } finally {
+        if (requestId === scanRequestRef.current) setScanLoading(false)
+      }
+    },
+    [apiFetch],
+  )
+
   const loadGithubState = useCallback(
     async (selectedProjectId) => {
+      const requestId = ++githubLoadRequestRef.current
+      scanRequestRef.current += 1
+      setupRequestRef.current += 1
+      setScanLoading(false)
+      setSetupLoading(false)
+
       if (!selectedProjectId) {
         setGithubConnection({
           connected: false,
@@ -1997,69 +2379,110 @@ function GitHubCIPage({
         })
         setGithubRepositories([])
         setRepository('')
+        setRepositoryPage(1)
+        setRepositoryTotal(0)
+        setRepositorySearch('')
+        setSetupResult(null)
+        setSetupError('')
+        setSetupErrorDetails(null)
+        setScanResult(null)
+        setScanError('')
         return
       }
 
       setGithubLoading(true)
       setGithubError('')
+      setSetupError('')
+      setSetupErrorDetails(null)
+      setScanError('')
 
       try {
-        const connection = await apiFetch(
-          `/github/connection/?project_id=${selectedProjectId}`,
-        )
+        const [connectionResult, setupResultResponse] = await Promise.allSettled([
+          apiFetch(`/github/connection/?project_id=${selectedProjectId}`),
+          apiFetch(`/projects/${selectedProjectId}/setup/`),
+        ])
+
+        if (requestId !== githubLoadRequestRef.current) return
+
+        if (connectionResult.status !== 'fulfilled') {
+          throw connectionResult.reason
+        }
+
+        const connection = connectionResult.value
+        const setupState =
+          setupResultResponse.status === 'fulfilled'
+            ? setupResultResponse.value
+            : null
 
         const normalizedConnection = {
           connected: Boolean(connection?.connected),
-          installation_connected: Boolean(
-            connection?.installation_connected,
-          ),
-          installation_id: String(
-            connection?.installation_id || '',
-          ),
-          repository_full_name: String(
-            connection?.repository_full_name || '',
-          ),
+          installation_connected: Boolean(connection?.installation_connected),
+          installation_id: String(connection?.installation_id || ''),
+          repository_full_name: String(connection?.repository_full_name || ''),
           metadata: connection?.metadata || {},
         }
 
         setGithubConnection(normalizedConnection)
 
-        if (normalizedConnection.installation_connected) {
-          const repositoryData = await apiFetch(
-            `/github/repositories/?project_id=${selectedProjectId}`,
-          )
-
-          const repositories = Array.isArray(
-            repositoryData?.repositories,
-          )
-            ? repositoryData.repositories
-            : []
-
-          setGithubRepositories(repositories)
-
-          if (normalizedConnection.repository_full_name) {
-            setRepository(
-              normalizedConnection.repository_full_name,
-            )
-          } else {
-            setRepository('')
-          }
+        if (setupState?.success && setupState?.already_exists) {
+          setSetupResult(setupState)
         } else {
+          setSetupResult(null)
+        }
+
+        if (!normalizedConnection.installation_connected) {
           setGithubRepositories([])
           setRepository('')
+          setRepositoryPage(1)
+          setRepositoryTotal(0)
+          setScanResult(null)
+          setScanError('')
+          return
+        }
+
+        const repositoryData = await apiFetch(
+          `/github/repositories/?project_id=${selectedProjectId}&page=1&per_page=100`,
+        )
+        if (requestId !== githubLoadRequestRef.current) return
+
+        const repositories = Array.isArray(repositoryData?.repositories)
+          ? repositoryData.repositories
+          : []
+        const totalCount = Number(repositoryData?.total_count)
+        setGithubRepositories(repositories)
+        setRepositoryPage(1)
+        setRepositoryTotal(
+          Number.isFinite(totalCount) && totalCount >= 0
+            ? totalCount
+            : repositories.length,
+        )
+
+        const connectedRepository = normalizedConnection.repository_full_name
+        setRepository(connectedRepository)
+
+        if (connectedRepository) {
+          await scanRepository(selectedProjectId, connectedRepository)
+        } else {
+          setScanResult(null)
+          setScanError('')
         }
       } catch (error) {
+        if (requestId !== githubLoadRequestRef.current) return
+
         setGithubRepositories([])
         setRepository('')
+        setRepositoryPage(1)
+        setRepositoryTotal(0)
+        setScanResult(null)
+        setScanError('')
         setGithubError(
-          error.message ||
-            'Unable to load GitHub connection status.',
+          error.message || 'Unable to load GitHub connection status.',
         )
       } finally {
-        setGithubLoading(false)
+        if (requestId === githubLoadRequestRef.current) setGithubLoading(false)
       }
     },
-    [apiFetch],
+    [apiFetch, scanRepository],
   )
 
   useEffect(() => {
@@ -2067,15 +2490,19 @@ function GitHubCIPage({
 
     setSetupResult(null)
     setSetupError('')
+    setSetupErrorDetails(null)
+    setScanResult(null)
+    setScanError('')
+    setRepositorySearch('')
+    setRepositoryPage(1)
+    setRepositoryTotal(0)
 
     loadGithubState(projectId)
   }, [projectId, loadGithubState])
 
   const connectGithub = async () => {
     if (!projectId) {
-      setGithubError(
-        'Select an analyzer project before connecting GitHub.',
-      )
+      setGithubError('Select an analyzer project before connecting GitHub.')
       return
     }
 
@@ -2083,15 +2510,12 @@ function GitHubCIPage({
     setGithubError('')
 
     try {
-      const data = await apiFetch(
-        `/github/install/start/?project_id=${projectId}`,
-      )
+      const data = await apiFetch(`/github/install/start/?project_id=${projectId}`)
 
       if (data?.already_connected) {
         rememberLastProject(projectId)
-        navigateTo('github', { project_id: projectId })
+        replaceTo('github', { project_id: projectId })
         await loadGithubState(projectId)
-        setGithubConnecting(false)
         return
       }
 
@@ -2101,24 +2525,17 @@ function GitHubCIPage({
         data?.install_url
 
       if (!githubAuthorizationUrl) {
-        throw new Error(
+        throw new ApiRequestError(
           'The backend did not return a GitHub authorization URL.',
         )
       }
 
       rememberLastProject(projectId)
-      navigateTo('github', { project_id: projectId })
-
-      // OAuth-first is intentional. For an already-installed GitHub App,
-      // opening /installations/new can send the user to GitHub's installation
-      // settings page and never return to API Analyzer after Save. Starting
-      // with OAuth lets the backend detect the existing installation and
-      // return directly to this project's GitHub page.
+      replaceTo('github', { project_id: projectId })
       window.location.replace(githubAuthorizationUrl)
     } catch (error) {
       setGithubError(
-        error.message ||
-          'Unable to start the GitHub App installation.',
+        error.message || 'Unable to start the GitHub App installation.',
       )
       setGithubConnecting(false)
     }
@@ -2130,16 +2547,12 @@ function GitHubCIPage({
 
   const connectRepository = async () => {
     if (!projectId) {
-      setGithubError(
-        'Select an analyzer project first.',
-      )
+      setGithubError('Select an analyzer project first.')
       return
     }
 
     if (!repository) {
-      setGithubError(
-        'Select a repository first.',
-      )
+      setGithubError('Select a repository first.')
       return
     }
 
@@ -2147,37 +2560,80 @@ function GitHubCIPage({
     setGithubError('')
     setSetupResult(null)
     setSetupError('')
+    setSetupErrorDetails(null)
+    setScanResult(null)
+    setScanError('')
 
     try {
-      const data = await apiFetch(
-        '/github/repositories/connect/',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            project_id: projectId,
-            repository_full_name: repository,
-          }),
-        },
-      )
+      const data = await apiFetch('/github/repositories/connect/', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: projectId,
+          repository_full_name: repository,
+        }),
+      })
 
-      const connectedRepository =
-        data?.repository?.full_name || repository
+      const connectedRepository = String(
+        data?.repository?.full_name || repository,
+      ).trim()
+
+      if (!connectedRepository) {
+        throw new ApiRequestError('Repository connection succeeded but no repository name was returned.')
+      }
 
       setRepository(connectedRepository)
-
       rememberLastProject(projectId)
-      // Reload the authoritative connection/repository state from the backend.
-      // The user remains on GitHub CI; there is no external redirect after save.
-      await loadGithubState(projectId)
       replaceTo('github', { project_id: projectId })
+
+      // Load authoritative connection state and run a read-only preflight scan.
+      await loadGithubState(projectId)
     } catch (error) {
       setGithubError(
-        error.message ||
-          'Unable to connect the selected repository.',
+        error.message || 'Unable to connect the selected repository.',
       )
     } finally {
       setRepositoryConnecting(false)
     }
+  }
+
+  const loadMoreRepositories = async () => {
+    if (!projectId || repositoriesLoading) return
+
+    const pageSize = 100
+    const hasMore = repositoryTotal > 0
+      ? githubRepositories.length < repositoryTotal
+      : githubRepositories.length >= pageSize
+
+    if (!hasMore) return
+
+    await loadRepositories(projectId, {
+      page: repositoryPage + 1,
+      append: true,
+    })
+  }
+
+  const handleRepositoryChange = (event) => {
+    scanRequestRef.current += 1
+    setupRequestRef.current += 1
+    setScanLoading(false)
+    setSetupLoading(false)
+    const nextRepository = String(event.target.value || '').trim()
+    setRepository(nextRepository)
+    setGithubError('')
+    setSetupError('')
+    setSetupErrorDetails(null)
+    setScanResult(null)
+    setScanError('')
+
+    const connectedRepository = normalizeRepositoryName(
+      githubConnection.repository_full_name,
+    )
+    setGithubConnection((current) => ({
+      ...current,
+      connected:
+        Boolean(nextRepository) &&
+        normalizeRepositoryName(nextRepository) === connectedRepository,
+    }))
   }
 
   const createSetupPR = async () => {
@@ -2187,16 +2643,14 @@ function GitHubCIPage({
     }
 
     if (!githubConnection.installation_connected) {
-      setSetupError(
-        'Connect the API Analyzer GitHub App first.',
-      )
+      setSetupError('Connect the API Analyzer GitHub App first.')
       return
     }
 
-    const selectedRepository = String(repository || '').trim().toLowerCase()
-    const connectedRepository = String(
-      githubConnection.repository_full_name || ''
-    ).trim().toLowerCase()
+    const selectedRepository = normalizeRepositoryName(repository)
+    const connectedRepository = normalizeRepositoryName(
+      githubConnection.repository_full_name,
+    )
 
     if (
       !githubConnection.connected ||
@@ -2209,49 +2663,91 @@ function GitHubCIPage({
       return
     }
 
+    if (setupResult?.already_exists) {
+      setSetupError('A setup PR for this project and repository already exists.')
+      return
+    }
+
+    const scanRepositoryName = normalizeRepositoryName(scanResult?.repository)
+    if (!scanResult || (scanRepositoryName && scanRepositoryName !== selectedRepository)) {
+      setSetupError('Run the repository preflight scan before enabling compatibility.')
+      return
+    }
+
+    const detectedAdapter = String(
+      scanResult?.framework?.adapter_type || '',
+    ).trim()
+    if (detectedAdapter !== 'django-rest-framework') {
+      setSetupError(
+        'This repository is not currently supported by the configured onboarding adapter. API Analyzer currently provisions Django REST Framework repositories only.',
+      )
+      return
+    }
+
+    if (!scanResult?.framework?.detected) {
+      setSetupError('Django REST Framework evidence was not confirmed in the repository scan.')
+      return
+    }
+
+    const setupRequestId = ++setupRequestRef.current
     setSetupLoading(true)
     setSetupError('')
+    setSetupErrorDetails(null)
     setGithubError('')
-    setSetupResult(null)
 
     try {
-      const data = await apiFetch(
-        `/projects/${projectId}/setup/`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            project_id: projectId,
-          }),
-        },
-      )
+      const data = await apiFetch(`/projects/${projectId}/setup/`, {
+        method: 'POST',
+        body: JSON.stringify({ project_id: projectId }),
+      })
 
       if (!data?.success) {
-        throw new Error(
-          data?.detail ||
-            'API Analyzer could not create the setup pull request.',
+        throw new ApiRequestError(
+          data?.detail || 'API Analyzer could not create the setup pull request.',
+          { payload: data },
         )
       }
 
+      if (setupRequestId !== setupRequestRef.current) return
+
       setSetupResult(data)
+      const normalized = normalizeScanPayload(data?.scan)
+      if (normalized) setScanResult(normalized)
+      setSetupError('')
+      setSetupErrorDetails(null)
 
       if (onRefresh) {
-        window.setTimeout(() => onRefresh(), 500)
+        window.setTimeout(() => onRefresh({ silent: true }), 300)
       }
     } catch (error) {
-      setSetupError(
-        error.message ||
-          'Automatic GitHub setup failed.',
-      )
+      if (setupRequestId !== setupRequestRef.current) return
+
+      const payload = error?.payload && typeof error.payload === 'object'
+        ? error.payload
+        : null
+
+      const payloadScan = normalizeScanPayload(payload?.scan)
+      if (payloadScan) setScanResult(payloadScan)
+
+      setSetupError(error.message || 'Automatic GitHub setup failed.')
+      setSetupErrorDetails({
+        reason: String(payload?.reason || '').trim(),
+        errors: Array.isArray(payload?.errors)
+          ? payload.errors.map((item) => String(item)).filter(Boolean)
+          : [],
+        scan: payloadScan,
+      })
     } finally {
-      setSetupLoading(false)
+      if (setupRequestId === setupRequestRef.current) setSetupLoading(false)
     }
   }
 
   const openGithub = () => {
-    if (!repository) return
+    const selected = String(repository || '').trim()
+    if (!selected || !selected.includes('/')) return
 
     window.open(
-      `https://github.com/${repository}`,
+      `https://github.com/${selected}`,
       '_blank',
       'noopener,noreferrer',
     )
@@ -2259,64 +2755,55 @@ function GitHubCIPage({
 
   const repositoryMatchesConnection =
     Boolean(repository) &&
-    String(githubConnection.repository_full_name || '').trim().toLowerCase() ===
-      String(repository || '').trim().toLowerCase()
+    normalizeRepositoryName(githubConnection.repository_full_name) ===
+      normalizeRepositoryName(repository)
 
-  const setupReady =
+  const scanSupported =
+    normalizeRepositoryName(scanResult?.framework?.adapter_type) ===
+    'django-rest-framework' &&
+    Boolean(scanResult?.framework?.detected)
+
+  const setupAlreadyExists = Boolean(
+    setupResult?.already_exists || setupResult?.setup?.pull_request_url,
+  )
+
+  const repositoryConnected =
     githubConnection.installation_connected &&
     githubConnection.connected &&
     repositoryMatchesConnection
 
-  const setupAlreadyExists = Boolean(
-    setupResult?.setup?.pull_request_url,
-  )
+  const setupReady = repositoryConnected && (setupAlreadyExists || scanSupported)
+
+  const hasMoreRepositories =
+    repositoryTotal > githubRepositories.length ||
+    (repositoryTotal === 0 && githubRepositories.length >= 100)
 
   return (
     <section className="github-ci-page">
       <div className="github-ci-hero">
         <div>
-          <span className="github-ci-kicker">
-            CI / GITHUB ACTIONS
-          </span>
-
+          <span className="github-ci-kicker">CI / GITHUB ACTIONS</span>
           <h2>Connect your API repository</h2>
-
           <p>
-            Connect GitHub once. API Analyzer detects the API contract
-            setup and creates one reviewable setup pull request for you.
-            No tokens, workflow YAML, or OpenAPI files need to be copied
-            manually.
+            Connect GitHub once. API Analyzer scans the selected repository,
+            confirms the configured adapter, and creates one reviewable setup
+            pull request. No GitHub token, workflow YAML, or OpenAPI file needs
+            to be copied manually.
           </p>
         </div>
 
         <div className="github-ci-hero-actions">
-          <span
-            className={`badge ${
-              setupReady
-                ? 'badge-safe'
-                : 'badge-warn'
-            }`}
-          >
-            {setupReady
-              ? 'Ready to enable'
-              : 'Setup required'}
+          <span className={`badge ${setupReady ? 'badge-safe' : 'badge-warn'}`}>
+            {setupReady ? 'Ready to enable' : 'Setup required'}
           </span>
 
           {repository && (
-            <button
-              type="button"
-              className="secondary"
-              onClick={openGithub}
-            >
+            <button type="button" className="secondary" onClick={openGithub}>
               <IconGithub /> Repository
             </button>
           )}
 
-          <button
-            type="button"
-            className="primary"
-            onClick={onOpenCompare}
-          >
+          <button type="button" className="primary" onClick={onOpenCompare}>
             <IconCompare /> Manual Compare
           </button>
         </div>
@@ -2329,11 +2816,10 @@ function GitHubCIPage({
               <div>
                 <h3>1. Choose your analyzer project</h3>
                 <p>
-                  This project stores the compatibility history for the
-                  repository you connect.
+                  This project stores the compatibility history and GitHub
+                  onboarding state for the repository you connect.
                 </p>
               </div>
-
               {selectedProject && (
                 <span className="status-pill">
                   {selectedProject.name} · #{selectedProject.id}
@@ -2343,28 +2829,29 @@ function GitHubCIPage({
 
             <label>
               <span>Analyzer Project</span>
-
               <select
                 value={projectId}
                 onChange={(event) => {
                   const nextProjectId = event.target.value
+                  scanRequestRef.current += 1
+                  setupRequestRef.current += 1
+                  setScanLoading(false)
+                  setSetupLoading(false)
                   setProjectId(nextProjectId)
                   setGithubError('')
                   setSetupError('')
+                  setSetupErrorDetails(null)
                   setSetupResult(null)
+                  setScanResult(null)
+                  setScanError('')
+                  setRepositorySearch('')
                   rememberLastProject(nextProjectId)
                   navigateTo('github', { project_id: nextProjectId })
                 }}
               >
-                <option value="">
-                  Select a project
-                </option>
-
+                <option value="">Select a project</option>
                 {projects.map((project) => (
-                  <option
-                    key={project.id}
-                    value={project.id}
-                  >
+                  <option key={project.id} value={project.id}>
                     {project.name} (#{project.id})
                   </option>
                 ))}
@@ -2377,21 +2864,13 @@ function GitHubCIPage({
               <div>
                 <h3>2. Connect GitHub</h3>
                 <p>
-                  API Analyzer uses the GitHub App to read the repositories
-                  you authorize. You never paste a GitHub token here.
+                  API Analyzer uses the GitHub App to read authorized
+                  repositories. GitHub credentials stay server-side.
                 </p>
               </div>
 
-              <span
-                className={`status-pill ${
-                  githubConnection.installation_connected
-                    ? 'github-status-ok'
-                    : ''
-                }`}
-              >
-                {githubConnection.installation_connected
-                  ? 'Connected'
-                  : 'Not connected'}
+              <span className={`status-pill ${githubConnection.installation_connected ? 'github-status-ok' : ''}`}>
+                {githubConnection.installation_connected ? 'Connected' : 'Not connected'}
               </span>
             </div>
 
@@ -2401,25 +2880,17 @@ function GitHubCIPage({
                   <div>
                     <span>01</span>
                     <strong>Connect GitHub</strong>
-                    <small>
-                      Authorize the API Analyzer GitHub App.
-                    </small>
+                    <small>Authorize the API Analyzer GitHub App.</small>
                   </div>
-
                   <div>
                     <span>02</span>
                     <strong>Select repository</strong>
-                    <small>
-                      Choose the repository containing your API.
-                    </small>
+                    <small>Choose the repository containing the API.</small>
                   </div>
-
                   <div>
                     <span>03</span>
                     <strong>Create setup PR</strong>
-                    <small>
-                      Analyzer prepares the one-time integration.
-                    </small>
+                    <small>Analyzer prepares the one-time integration.</small>
                   </div>
                 </div>
 
@@ -2427,16 +2898,10 @@ function GitHubCIPage({
                   type="button"
                   className="primary github-connect-button"
                   onClick={connectGithub}
-                  disabled={
-                    githubConnecting ||
-                    githubLoading ||
-                    !projectId
-                  }
+                  disabled={githubConnecting || githubLoading || !projectId}
                 >
                   <IconGithub />
-                  {githubConnecting
-                    ? 'Opening GitHub…'
-                    : 'Connect GitHub'}
+                  {githubConnecting ? 'Opening GitHub…' : 'Connect GitHub'}
                 </button>
               </div>
             ) : (
@@ -2444,48 +2909,16 @@ function GitHubCIPage({
                 <div className="github-repository-toolbar">
                   <label className="github-repository-selector">
                     <span>Repository</span>
-
                     <select
                       value={repository}
-                      onChange={(event) => {
-                        const nextRepository = event.target.value
-                        const connectedRepository = String(
-                          githubConnection.repository_full_name || ''
-                        ).trim().toLowerCase()
-
-                        setRepository(nextRepository)
-                        setGithubConnection((current) => ({
-                          ...current,
-                          connected:
-                            Boolean(nextRepository) &&
-                            String(nextRepository).trim().toLowerCase() ===
-                              connectedRepository,
-                        }))
-                        setSetupResult(null)
-                        setSetupError('')
-                      }}
-                      disabled={
-                        githubLoading ||
-                        repositoryConnecting ||
-                        githubRepositories.length === 0
-                      }
+                      onChange={handleRepositoryChange}
+                      disabled={githubLoading || repositoryConnecting || !repositoryOptions.length}
                     >
-                      <option value="">
-                        Select a repository
-                      </option>
-
-                      {githubRepositories.map((item) => (
-                        <option
-                          key={
-                            item.id ||
-                            item.full_name
-                          }
-                          value={item.full_name}
-                        >
+                      <option value="">Select a repository</option>
+                      {filteredRepositories.map((item) => (
+                        <option key={item.id || item.full_name} value={item.full_name}>
                           {item.full_name}
-                          {item.private
-                            ? ' · private'
-                            : ''}
+                          {item.private === true ? ' · private' : item.private === false ? ' · public' : ''}
                         </option>
                       ))}
                     </select>
@@ -2495,22 +2928,40 @@ function GitHubCIPage({
                     type="button"
                     className="secondary"
                     onClick={refreshGithub}
-                    disabled={
-                      githubLoading ||
-                      repositoryConnecting
-                    }
+                    disabled={githubLoading || repositoryConnecting || repositoriesLoading || scanLoading}
                   >
-                    <IconRefresh
-                      className={
-                        githubLoading
-                          ? 'spin'
-                          : ''
-                      }
-                    />
-                    {githubLoading
-                      ? 'Refreshing…'
-                      : 'Refresh'}
+                    <IconRefresh className={githubLoading || repositoriesLoading || scanLoading ? 'spin' : ''} />
+                    {githubLoading || repositoriesLoading ? 'Refreshing…' : 'Refresh'}
                   </button>
+                </div>
+
+                <div className="github-repository-search-row">
+                  <label className="github-repository-search">
+                    <span>Filter loaded repositories</span>
+                    <input
+                      type="search"
+                      value={repositorySearch}
+                      onChange={(event) => setRepositorySearch(event.target.value)}
+                      placeholder="Search owner/repository"
+                      disabled={!repositoryOptions.length}
+                    />
+                  </label>
+                  <div className="github-repository-list-meta">
+                    <span>
+                      {repositoryOptions.length}
+                      {repositoryTotal > 0 ? ` of ${repositoryTotal}` : ''} repositories loaded
+                    </span>
+                    {hasMoreRepositories && (
+                      <button
+                        type="button"
+                        className="secondary small-btn"
+                        onClick={loadMoreRepositories}
+                        disabled={repositoriesLoading}
+                      >
+                        {repositoriesLoading ? 'Loading…' : 'Load more'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {repository && (
@@ -2519,7 +2970,6 @@ function GitHubCIPage({
                       <small>Repository</small>
                       <strong>{repository}</strong>
                     </div>
-
                     <div>
                       <small>Default branch</small>
                       <strong>
@@ -2529,13 +2979,14 @@ function GitHubCIPage({
                           'main'}
                       </strong>
                     </div>
-
                     <div>
                       <small>Visibility</small>
                       <strong>
-                        {selectedGithubRepository?.private
+                        {selectedGithubRepository?.private === true
                           ? 'Private'
-                          : 'Public'}
+                          : selectedGithubRepository?.private === false
+                            ? 'Public'
+                            : 'Unknown'}
                       </strong>
                     </div>
                   </div>
@@ -2547,21 +2998,13 @@ function GitHubCIPage({
                       type="button"
                       className="primary"
                       onClick={connectRepository}
-                      disabled={
-                        repositoryConnecting ||
-                        githubLoading ||
-                        !repository
-                      }
+                      disabled={repositoryConnecting || githubLoading || repositoriesLoading || !repository}
                     >
                       <IconCheck />
-                      {repositoryConnecting
-                        ? 'Connecting…'
-                        : 'Use this repository'}
+                      {repositoryConnecting ? 'Connecting…' : 'Use this repository'}
                     </button>
-
                     <span className="github-inline-help">
-                      This only links the selected repository to the
-                      current analyzer project.
+                      This links only the selected repository to the current analyzer project.
                     </span>
                   </div>
                 )}
@@ -2569,7 +3012,7 @@ function GitHubCIPage({
                 {githubConnection.connected && (
                   <div className="github-connected-note">
                     <IconCheck />
-                    Repository is connected and ready for automatic setup.
+                    Repository is connected. A read-only repository scan confirms setup support before provisioning.
                   </div>
                 )}
               </div>
@@ -2577,31 +3020,135 @@ function GitHubCIPage({
 
             {githubError && (
               <div className="notice notice-error github-ci-callout">
-                <span className="notice-icon">
-                  <IconAlertCircle />
-                </span>
-
-                <span className="notice-body">
-                  {githubError}
-                </span>
+                <span className="notice-icon"><IconAlertCircle /></span>
+                <span className="notice-body">{githubError}</span>
               </div>
             )}
           </section>
 
-          {setupReady && (
+          {repositoryConnected && (
+            <section className="panel github-ci-card github-scan-card">
+              <div className="section-title">
+                <div>
+                  <h3>Repository preflight scan</h3>
+                  <p>
+                    This read-only scan is the source of truth for the current
+                    repository revision. The configured onboarding milestone
+                    currently registers the Django REST Framework adapter only.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary small-btn"
+                  onClick={() => scanRepository(projectId, repository)}
+                  disabled={scanLoading || githubLoading}
+                >
+                  <IconRefresh className={scanLoading ? 'spin' : ''} />
+                  {scanLoading ? 'Scanning…' : 'Re-scan'}
+                </button>
+              </div>
+
+              {scanLoading && (
+                <div className="github-scan-loading panel">
+                  <p>Reading repository metadata, dependency manifests, source evidence, and OpenAPI contract paths…</p>
+                </div>
+              )}
+
+              {scanError && (
+                <div className="notice notice-error github-ci-callout">
+                  <span className="notice-icon"><IconAlertCircle /></span>
+                  <span className="notice-body">{scanError}</span>
+                </div>
+              )}
+
+              {scanResult && (
+                <div className="github-scan-result">
+                  <div className="github-scan-result-grid">
+                    <div>
+                      <small>Revision</small>
+                      <strong title={scanResult.commit_sha || ''}>
+                        {scanResult.commit_sha ? scanResult.commit_sha.slice(0, 12) : 'Not returned'}
+                      </strong>
+                      <span>Immutable repository head used for setup planning.</span>
+                    </div>
+                    <div>
+                      <small>Framework</small>
+                      <strong>{scanResult.framework?.name || 'Not detected'}</strong>
+                      <span>
+                        {scanResult.framework?.adapter_type || 'No registered adapter'}
+                        {scanResult.framework?.confidence ? ` · ${scanResult.framework.confidence} confidence` : ''}
+                      </span>
+                    </div>
+                    <div>
+                      <small>Contract</small>
+                      <strong>{scanResult.contract?.path || 'Not found'}</strong>
+                      <span>
+                        {scanResult.contract?.found
+                          ? `${scanResult.contract.type || 'OpenAPI'} · ${scanResult.contract.confidence || 'detected'}`
+                          : 'No committed OpenAPI/Swagger file detected'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {!scanSupported ? (
+                    <div className="github-scan-unsupported">
+                      <span className="notice-icon"><IconAlertCircle /></span>
+                      <div>
+                        <strong>Automatic onboarding is not available for this repository yet.</strong>
+                        <p>
+                          Detected technology:{' '}
+                          <code>{scanResult.framework?.name || scanResult.framework?.adapter_type || 'unknown'}</code>.
+                          {' '}The current setup registry accepts Django REST Framework only. A generic Python, FastAPI, Flask, or other repository must not be guessed as DRF.
+                        </p>
+                        {scanResult.framework?.evidence?.length > 0 && (
+                          <small>Evidence: {scanResult.framework.evidence.slice(0, 4).join(' · ')}</small>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="github-scan-ready">
+                      <div className="github-ci-ready-icon"><IconCheck /></div>
+                      <div>
+                        <strong>Django REST Framework adapter confirmed</strong>
+                        <p>
+                          Contract source:{' '}
+                          <code>{scanResult.contract?.found ? 'committed_file' : 'generated'}</code>
+                          {' · '}
+                          Branch: <code>{scanResult.default_branch || 'main'}</code>
+                          {scanResult.commit_sha ? <> · SHA <code>{scanResult.commit_sha.slice(0, 12)}</code></> : null}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {scanResult.warnings?.length > 0 && (
+                    <div className="github-scan-warnings">
+                      {scanResult.warnings.slice(0, 6).map((warning, index) => (
+                        <div className="notice notice-warning github-ci-callout" key={`${warning}-${index}`}>
+                          <span className="notice-icon"><IconAlertCircle /></span>
+                          <span className="notice-body">{warning}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+
+          {repositoryConnected && (
             <section className="panel github-ci-card github-simple-setup-card">
               <div className="section-title">
                 <div>
                   <h3>3. Enable API compatibility</h3>
                   <p>
-                    API Analyzer will scan the repository, detect the contract
-                    source, provision the GitHub Actions connection, and create
-                    one setup pull request for review.
+                    The backend re-scans the repository, resolves the registered
+                    adapter, provisions the Actions credential, and creates one
+                    reviewable setup pull request from the exact repository SHA.
                   </p>
                 </div>
-
-                <span className="status-pill github-status-ok">
-                  Ready
+                <span className={`status-pill ${setupReady ? 'github-status-ok' : ''}`}>
+                  {setupReady ? 'Ready' : setupAlreadyExists ? 'Configured' : 'Preflight required'}
                 </span>
               </div>
 
@@ -2610,32 +3157,21 @@ function GitHubCIPage({
                   <span>1</span>
                   <div>
                     <strong>Detect the repository</strong>
-                    <small>
-                      Framework, contract source, branch, and API specification
-                      are resolved by the analyzer backend.
-                    </small>
+                    <small>Resolve framework, contract source, branch, and exact revision.</small>
                   </div>
                 </div>
-
                 <div className="github-one-time-step">
                   <span>2</span>
                   <div>
                     <strong>Configure GitHub automatically</strong>
-                    <small>
-                      The analyzer creates the required Actions secret,
-                      repository variable, and workflow through the GitHub App.
-                    </small>
+                    <small>Create the required repository secret, variable, and workflow through the App.</small>
                   </div>
                 </div>
-
                 <div className="github-one-time-step">
                   <span>3</span>
                   <div>
                     <strong>Review one setup pull request</strong>
-                    <small>
-                      You review the exact repository changes and merge them
-                      normally.
-                    </small>
+                    <small>Review the generated files and merge the setup PR normally.</small>
                   </div>
                 </div>
               </div>
@@ -2644,55 +3180,93 @@ function GitHubCIPage({
                 type="button"
                 className="primary large-btn"
                 onClick={createSetupPR}
-                disabled={setupLoading || setupAlreadyExists}
+                disabled={setupLoading || setupAlreadyExists || !scanSupported}
               >
                 <IconGithub />
-
                 {setupLoading
                   ? 'Preparing setup PR…'
                   : setupAlreadyExists
                     ? 'Setup PR Already Created'
-                    : 'Enable API Compatibility'}
+                    : !scanSupported
+                      ? 'Repository Not Supported'
+                      : 'Enable API Compatibility'}
               </button>
 
-              {setupError && (
-                <div className="notice notice-error github-ci-callout">
-                  <span className="notice-icon">
-                    <IconAlertCircle />
-                  </span>
+              {!scanSupported && !setupAlreadyExists && !scanLoading && (
+                <div className="notice notice-warning github-ci-callout">
+                  <span className="notice-icon"><IconAlertCircle /></span>
                   <span className="notice-body">
-                    {setupError}
+                    Setup is intentionally blocked until the repository scan confirms the registered Django REST Framework adapter.
                   </span>
                 </div>
               )}
 
-              {setupResult?.setup?.pull_request_url && (
-                <div className="github-ci-ready-banner">
-                  <div className="github-ci-ready-icon">
-                    <IconCheck />
-                  </div>
+              {setupError && (
+                <div className="notice notice-error github-ci-callout">
+                  <span className="notice-icon"><IconAlertCircle /></span>
+                  <span className="notice-body">{setupError}</span>
+                </div>
+              )}
 
+              {setupErrorDetails?.reason && (
+                <div className="github-setup-diagnostics">
+                  <strong>Backend setup decision</strong>
+                  <p>{setupErrorDetails.reason}</p>
+                  {setupErrorDetails.errors.length > 0 && (
+                    <ul>
+                      {setupErrorDetails.errors.slice(0, 8).map((item, index) => (
+                        <li key={`${item}-${index}`}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {setupResult?.setup && (
+                <div className="github-ci-ready-banner">
+                  <div className="github-ci-ready-icon"><IconCheck /></div>
                   <div>
                     <strong>
-                      Setup pull request created
+                      {setupAlreadyExists ? 'Setup pull request is already registered' : 'Setup pull request created'}
                     </strong>
-
                     <p>
                       {setupResult.adapter?.framework_name
                         ? `${setupResult.adapter.framework_name} was detected. `
                         : ''}
-                      Review the setup PR and merge it in GitHub.
+                      {setupResult.setup.branch_name ? `Branch: ${setupResult.setup.branch_name}. ` : ''}
+                      {setupResult.setup.spec_path ? `Contract: ${setupResult.setup.spec_path}.` : ''}
                     </p>
+                    {setupResult.setup.pull_request_url && (
+                      <a href={setupResult.setup.pull_request_url} target="_blank" rel="noreferrer">
+                        Open setup pull request →
+                      </a>
+                    )}
 
-                    <a
-                      href={
-                        setupResult.setup.pull_request_url
-                      }
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open setup pull request →
-                    </a>
+                    <div className="github-setup-metadata">
+                      <div>
+                        <small>Base branch</small>
+                        <code>{setupResult.setup.base_branch || 'main'}</code>
+                      </div>
+                      <div>
+                        <small>Contract source</small>
+                        <code>{setupResult.scan?.contract?.found ? 'committed_file' : 'generated'}</code>
+                      </div>
+                      <div>
+                        <small>Generation</small>
+                        <code>{setupResult.setup.generation_command || 'No generation command — contract already committed.'}</code>
+                      </div>
+                    </div>
+
+                    {Array.isArray(setupResult.setup.warnings) && setupResult.setup.warnings.length > 0 && (
+                      <div className="github-scan-warnings">
+                        {setupResult.setup.warnings.slice(0, 6).map((warning, index) => (
+                          <div className="notice notice-warning github-ci-callout" key={`${warning}-${index}`}>
+                            <span className="notice-icon"><IconAlertCircle /></span>
+                            <span className="notice-body">{warning}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -2705,128 +3279,74 @@ function GitHubCIPage({
             <div className="section-title">
               <div>
                 <h3>CI tracker</h3>
-                <p>
-                  Compatibility results already stored for this project and
-                  repository.
-                </p>
+                <p>Compatibility results already stored for this project and repository.</p>
               </div>
-
-              <span className="status-pill">
-                {connectedRuns.length} runs
-              </span>
+              <span className="status-pill">{connectedRuns.length} runs</span>
             </div>
 
             {activeRunExists && (
               <div className="notice notice-info github-ci-callout">
-                <span className="notice-icon">
-                  <IconRefresh className="spin" />
-                </span>
-
-                <span className="notice-body">
-                  An active run is being refreshed every 10 seconds.
-                </span>
+                <span className="notice-icon"><IconRefresh className="spin" /></span>
+                <span className="notice-body">An active run is being refreshed every 7 seconds.</span>
               </div>
             )}
 
             {connectedRuns.length > 0 ? (
               <div className="github-ci-runs">
-                {connectedRuns
-                  .slice(0, 10)
-                  .map((comparison) => {
-                    const gate = getGateStatus(comparison)
-                    const counts =
-                      getComparisonCounts(comparison)
+                {connectedRuns.slice(0, 10).map((comparison) => {
+                  const gate = getGateStatus(comparison)
+                  const counts = getComparisonCounts(comparison)
+                  const repo = comparison.repository || 'unknown repository'
+                  const prLabel = comparison.pull_request_number
+                    ? `PR #${comparison.pull_request_number}`
+                    : `Comparison #${comparison.id}`
 
-                    const repo =
-                      comparison.repository ||
-                      'unknown repository'
+                  return (
+                    <article className="github-ci-run-row" key={comparison.id}>
+                      <div className={`github-ci-run-status ${
+                        gate === 'PASS'
+                          ? 'is-pass'
+                          : gate === 'WARN'
+                            ? 'is-warn'
+                            : gate === 'FAIL' || gate === 'ERROR'
+                              ? 'is-fail'
+                              : 'is-pending'
+                      }`}>
+                        {gate}
+                      </div>
 
-                    const prLabel =
-                      comparison.pull_request_number
-                        ? `PR #${comparison.pull_request_number}`
-                        : `Comparison #${comparison.id}`
+                      <div className="github-ci-run-main">
+                        <strong>{prLabel}</strong>
+                        <small>{repo}</small>
+                        <small>
+                          {comparison.base_sha ? String(comparison.base_sha).slice(0, 10) : 'base'}
+                          {' → '}
+                          {comparison.head_sha ? String(comparison.head_sha).slice(0, 10) : 'head'}
+                        </small>
+                        <small>
+                          {counts.breaking} breaking · {counts.potentiallyBreaking} potential · {counts.nonBreaking} compatible
+                        </small>
+                        {comparison.gate_reason_code && (
+                          <small>Reason: {comparison.gate_reason_code}</small>
+                        )}
+                      </div>
 
-                    return (
-                      <article
-                        className="github-ci-run-row"
-                        key={comparison.id}
-                      >
-                        <div
-                          className={`github-ci-run-status ${
-                            gate === 'PASS'
-                              ? 'is-pass'
-                              : gate === 'WARN'
-                                ? 'is-warn'
-                                : gate === 'FAIL' ||
-                                    gate === 'ERROR'
-                                  ? 'is-fail'
-                                  : 'is-pending'
-                          }`}
-                        >
-                          {gate}
-                        </div>
-
-                        <div className="github-ci-run-main">
-                          <strong>{prLabel}</strong>
-                          <small>{repo}</small>
-
-                          <small>
-                            {comparison.base_sha
-                              ? String(
-                                  comparison.base_sha,
-                                ).slice(0, 10)
-                              : 'base'}
-                            {' → '}
-                            {comparison.head_sha
-                              ? String(
-                                  comparison.head_sha,
-                                ).slice(0, 10)
-                              : 'head'}
-                          </small>
-
-                          <small>
-                            {counts.breaking} breaking ·{' '}
-                            {counts.potentiallyBreaking} potential ·{' '}
-                            {counts.nonBreaking} compatible
-                          </small>
-                        </div>
-
-                        <div className="github-ci-run-actions">
-                          <span
-                            className={`badge ${gateBadgeClass(
-                              gate,
-                            )}`}
-                          >
-                            {gate}
-                          </span>
-
-                          <button
-                            type="button"
-                            className="secondary small-btn"
-                            onClick={() =>
-                              onSelectComparison(
-                                comparison,
-                              )
-                            }
-                          >
-                            View
-                          </button>
-                        </div>
-                      </article>
-                    )
-                  })}
+                      <div className="github-ci-run-actions">
+                        <span className={`badge ${gateBadgeClass(gate)}`}>{gate}</span>
+                        <button type="button" className="secondary small-btn" onClick={() => onSelectComparison(comparison)}>
+                          View
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
               </div>
             ) : (
               <div className="github-ci-empty">
                 <IconGithub />
-
-                <strong>
-                  No compatibility runs yet
-                </strong>
-
+                <strong>No compatibility runs yet</strong>
                 <p>
-                  Merge the setup pull request first. Future repository PRs
-                  will appear here automatically.
+                  Merge the setup pull request first. Future repository PRs will appear here automatically.
                 </p>
               </div>
             )}
@@ -2836,67 +3356,46 @@ function GitHubCIPage({
             <div className="section-title">
               <div>
                 <h3>What API Analyzer handles</h3>
-                <p>
-                  The developer workflow stays focused on normal code reviews.
-                </p>
+                <p>The developer workflow stays focused on normal code reviews.</p>
               </div>
             </div>
 
             <div className="github-connection-state">
               <div className="connection-row">
                 <span>GitHub App</span>
-                <strong
-                  className={
-                    githubConnection.installation_connected
-                      ? 'is-ready'
-                      : 'is-pending'
-                  }
-                >
-                  {githubConnection.installation_connected
-                    ? 'Connected'
-                    : 'Not connected'}
+                <strong className={githubConnection.installation_connected ? 'is-ready' : 'is-pending'}>
+                  {githubConnection.installation_connected ? 'Connected' : 'Not connected'}
                 </strong>
               </div>
-
               <div className="connection-row">
                 <span>Repository</span>
-                <strong
-                  className={
-                    githubConnection.connected
-                      ? 'is-ready'
-                      : 'is-pending'
-                  }
-                >
+                <strong className={githubConnection.connected ? 'is-ready' : 'is-pending'}>
                   {repository || 'Not selected'}
                 </strong>
               </div>
-
+              <div className="connection-row">
+                <span>Adapter</span>
+                <strong className={scanSupported ? 'is-ready' : 'is-pending'}>
+                  {scanResult?.framework?.adapter_type || 'Preflight required'}
+                </strong>
+              </div>
               <div className="connection-row">
                 <span>Contract detection</span>
-                <strong className="is-ready">
-                  Automatic
+                <strong className={scanResult?.contract?.found ? 'is-ready' : 'is-pending'}>
+                  {scanResult?.contract?.found ? 'Committed' : scanResult ? 'Generated / not committed' : 'Pending'}
                 </strong>
               </div>
-
               <div className="connection-row">
                 <span>GitHub credentials</span>
-                <strong className="is-ready">
-                  Provisioned by App
-                </strong>
+                <strong className="is-ready">Provisioned by App</strong>
               </div>
-
               <div className="connection-row">
                 <span>Setup method</span>
-                <strong className="is-ready">
-                  Reviewable setup PR
-                </strong>
+                <strong className="is-ready">Reviewable setup PR</strong>
               </div>
-
               <div className="connection-row">
                 <span>Future PR checks</span>
-                <strong className="is-ready">
-                  Automatic
-                </strong>
+                <strong className="is-ready">Automatic</strong>
               </div>
             </div>
           </section>
@@ -2905,28 +3404,14 @@ function GitHubCIPage({
             <div className="section-title">
               <div>
                 <h3>Gate semantics</h3>
-                <p>
-                  Compatibility results remain PASS, WARN, FAIL, or ERROR.
-                </p>
+                <p>Compatibility results remain PASS, WARN, FAIL, or ERROR.</p>
               </div>
             </div>
 
             <div className="github-gate-legend">
-              {[
-                'PASS',
-                'WARN',
-                'FAIL',
-                'ERROR',
-              ].map((gate) => (
+              {['PASS', 'WARN', 'FAIL', 'ERROR'].map((gate) => (
                 <div key={gate}>
-                  <span
-                    className={`badge ${gateBadgeClass(
-                      gate,
-                    )}`}
-                  >
-                    {gate}
-                  </span>
-
+                  <span className={`badge ${gateBadgeClass(gate)}`}>{gate}</span>
                   <small>
                     {gate === 'PASS'
                       ? 'Safe under project policy'
@@ -2959,22 +3444,75 @@ function ComparePage({ projects, loading, runPhase, onRun }) {
   })
 
   const projectSeededRef = useRef(false)
+  const [validationError, setValidationError] = useState('')
 
   useEffect(() => {
-    if (!projectSeededRef.current && projects.length > 0) {
-      setForm((current) => ({
-        ...current,
-        projectId: projects[0].id,
-      }))
-      projectSeededRef.current = true
-    }
+    if (projectSeededRef.current || projects.length === 0) return
+
+    setForm((current) => ({
+      ...current,
+      projectId: current.projectId || projects[0].id,
+    }))
+    projectSeededRef.current = true
   }, [projects])
 
-  const update = (field, value) => setForm((curr) => ({ ...curr, [field]: value }))
+  const update = (field, value) => {
+    setForm((curr) => ({ ...curr, [field]: value }))
+    setValidationError('')
+  }
 
   const submit = (event) => {
     event.preventDefault()
-    onRun(form)
+    setValidationError('')
+
+    const projectName = String(form.projectName || '').trim()
+    const oldName = String(form.oldName || '').trim()
+    const newName = String(form.newName || '').trim()
+
+    if (!form.projectId && !projectName) {
+      setValidationError('Select an existing project or provide a new project name.')
+      return
+    }
+
+    if (!oldName || !newName) {
+      setValidationError('Both specification labels are required.')
+      return
+    }
+
+    let oldContent
+    let newContent
+    try {
+      oldContent = JSON.parse(String(form.oldSpec || ''))
+    } catch {
+      setValidationError('Baseline specification is not valid JSON.')
+      return
+    }
+
+    try {
+      newContent = JSON.parse(String(form.newSpec || ''))
+    } catch {
+      setValidationError('Proposed specification is not valid JSON.')
+      return
+    }
+
+    const oldValidation = validateOpenApiDocument(oldContent)
+    if (!oldValidation.ok) {
+      setValidationError(`Baseline specification: ${oldValidation.message}`)
+      return
+    }
+
+    const newValidation = validateOpenApiDocument(newContent)
+    if (!newValidation.ok) {
+      setValidationError(`Proposed specification: ${newValidation.message}`)
+      return
+    }
+
+    onRun({
+      ...form,
+      projectName,
+      oldName,
+      newName,
+    })
   }
 
   const loadExample = () => {
@@ -3091,6 +3629,13 @@ function ComparePage({ projects, loading, runPhase, onRun }) {
         />
       </div>
 
+      {validationError && (
+        <div className="notice notice-error compare-validation-notice">
+          <span className="notice-icon"><IconAlertCircle /></span>
+          <span className="notice-body">{validationError}</span>
+        </div>
+      )}
+
       <div className="runbar">
         <div className="runbar-info">
           <strong>Execute Compatibility Audit</strong>
@@ -3120,7 +3665,15 @@ function ComparePage({ projects, loading, runPhase, onRun }) {
           )}
         </div>
 
-        <button type="submit" className="primary large-btn" disabled={loading}>
+        <button
+          type="submit"
+          className="primary large-btn"
+          disabled={
+            loading ||
+            !String(form.oldName || '').trim() ||
+            !String(form.newName || '').trim()
+          }
+        >
           {loading ? (
             <>
               <IconRefresh className="spin" /> Running Pipeline…
@@ -3181,8 +3734,22 @@ function SpecEditor({ title, badge, value, onChange }) {
         onChange={(e) => onChange(e.target.value)}
         spellCheck="false"
         rows={18}
-        placeholder="Paste valid OpenAPI 3.0 or Swagger JSON..."
+        placeholder="Paste valid OpenAPI 3.x or Swagger 2.0 JSON..."
       />
+      {isValid && (() => {
+        try {
+          const result = validateOpenApiDocument(JSON.parse(value))
+          return (
+            <div className={`editor-validation-note ${result.ok ? 'is-ok' : 'is-bad'}`}>
+              {result.ok
+                ? `${result.type === 'swagger' ? 'Swagger' : 'OpenAPI'} ${result.version} structure detected.`
+                : result.message}
+            </div>
+          )
+        } catch {
+          return null
+        }
+      })()}
     </div>
   )
 }
@@ -3255,9 +3822,35 @@ function HistoryPage({ comparisons, projects, onSelect }) {
   )
 }
 
-function JobsPage({ jobs, comparisons, onCreateJob }) {
+function JobsPage({ jobs, comparisons, onCreateJob, onRefresh }) {
   const [comparisonId, setComparisonId] = useState(comparisons[0]?.id || '')
   const [expandedJob, setExpandedJob] = useState(null)
+
+  useEffect(() => {
+    const comparisonStillExists = comparisons.some(
+      (comparison) => String(comparison.id) === String(comparisonId),
+    )
+
+    if (!comparisonStillExists) {
+      setComparisonId(comparisons[0]?.id || '')
+    }
+  }, [comparisons, comparisonId])
+
+  useEffect(() => {
+    const activeJob = jobs.some((job) => {
+      const status = String(job.status || '').toLowerCase()
+      return status === 'queued' || status === 'running'
+    })
+
+    if (!activeJob || !onRefresh) return undefined
+
+    const timer = window.setInterval(
+      () => onRefresh({ silent: true }),
+      7000,
+    )
+
+    return () => window.clearInterval(timer)
+  }, [jobs, onRefresh])
 
   const getStatusClass = (status) => {
     switch (String(status || '').toLowerCase()) {
@@ -3349,9 +3942,10 @@ function JobsPage({ jobs, comparisons, onCreateJob }) {
             const counts = getCounts(job)
             const gate = comparison ? getGateStatus(comparison) : 'UNASSESSED'
             const isExpanded = expandedJob === job.id
-            const progress = job.progress !== undefined && job.progress !== null
-              ? Number(job.progress)
-              : job.status === 'completed'
+            const rawProgress = Number(job.progress)
+            const progress = Number.isFinite(rawProgress)
+              ? Math.min(Math.max(rawProgress, 0), 100)
+              : String(job.status || '').toLowerCase() === 'completed'
                 ? 100
                 : 0
 
@@ -3396,6 +3990,14 @@ function JobsPage({ jobs, comparisons, onCreateJob }) {
                     <div className="job-meta-item"><small>Error</small><strong>{job.error_code || '—'}</strong></div>
                   </div>
                 </div>
+
+                {job.error && (
+                  <div className="job-error-box">
+                    <strong>{job.error_code || 'Analysis error'}</strong>
+                    <p>{String(job.error)}</p>
+                    {job.error_detail && <p>{String(job.error_detail)}</p>}
+                  </div>
+                )}
 
                 {isExpanded && (
                   <div className="job-details-panel">
