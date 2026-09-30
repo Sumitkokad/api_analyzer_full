@@ -388,13 +388,23 @@ runs:
       run: |
         set -euo pipefail
 
+        # The base SHA belongs to the base repository. The head SHA may belong
+        # to a fork, so fetching it directly from origin is not reliable.
         git fetch --no-tags origin "$BASE_SHA"
-        git fetch --no-tags origin "$HEAD_SHA"
 
+        PR_HEAD_REF="refs/remotes/origin/api-analyzer-pr-${PR_NUMBER}"
         git fetch \
           --no-tags \
           origin \
-          "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/api-analyzer-pr-${PR_NUMBER}"
+          "refs/pull/${PR_NUMBER}/head:${PR_HEAD_REF}"
+
+        FETCHED_HEAD_SHA="$(git rev-parse "$PR_HEAD_REF")"
+        if [[ "$FETCHED_HEAD_SHA" != "$HEAD_SHA" ]]; then
+          echo "::error::GitHub pull-request head ref does not match the event head SHA."
+          echo "::error::Event head SHA: $HEAD_SHA"
+          echo "::error::Fetched PR head SHA: $FETCHED_HEAD_SHA"
+          exit 1
+        fi
 
 
     # ============================================================
@@ -461,6 +471,10 @@ runs:
 
     # ============================================================
     # 7. Prepare isolated repository runtimes
+    #
+    # Each composite-action step runs in its own shell process. Runtime
+    # directories/variables are persisted through GITHUB_ENV; helper functions
+    # are therefore defined again in any later step that needs them.
     # ============================================================
 
     - name: Prepare repository runtime dependencies
@@ -560,7 +574,20 @@ runs:
             if [[ "$requirements_file" == requirements*.txt ]]; then
               "$venv_dir/bin/python" -m pip install -r "$repo_dir/$requirements_file"
             else
-              "$venv_dir/bin/python" -m pip install "$repo_dir/$workdir"
+              local dependency_dir
+              dependency_dir="$(dirname "$requirements_file")"
+              if [[ "$dependency_dir" == "." ]]; then
+                dependency_dir=""
+              fi
+
+              local install_target="$repo_dir"
+              if [[ -n "$dependency_dir" ]]; then
+                install_target="$repo_dir/$dependency_dir"
+              elif [[ "$workdir" != "." ]]; then
+                install_target="$repo_dir/$workdir"
+              fi
+
+              "$venv_dir/bin/python" -m pip install "$install_target"
             fi
           elif [[ -n "${GENERATE_COMMAND:-}" ]]; then
             echo "::error::Python contract generation requested for $label, but no dependency installation plan was provided and no supported Python dependency file was found."
@@ -744,12 +771,31 @@ runs:
         # Workdir is normalized once after Prepare CI variables.
         WORKING_DIRECTORY="$(normalize_plan_path "$WORKING_DIRECTORY")"
 
+        if [[ "$WORKING_DIRECTORY" != "." && ! -d "$BASE_DIR/$WORKING_DIRECTORY" ]]; then
+          echo "::error::Base working directory does not exist: $BASE_DIR/$WORKING_DIRECTORY"
+          exit 1
+        fi
+
+        if [[ "$WORKING_DIRECTORY" != "." && ! -d "$HEAD_DIR/$WORKING_DIRECTORY" ]]; then
+          echo "::error::Head working directory does not exist: $HEAD_DIR/$WORKING_DIRECTORY"
+          exit 1
+        fi
+
+        while IFS= read -r dependency_file; do
+          [[ -z "$dependency_file" ]] && continue
+          dependency_file="${dependency_file#./}"
+          if [[ "$dependency_file" = /* || "$dependency_file" == *".."* ]]; then
+            echo "::error::Invalid adapter dependency file path: $dependency_file"
+            exit 1
+          fi
+        done <<< "${DEPENDENCY_FILES:-}"
+
         prepare_runtime "$BASE_DIR" "base"
         prepare_runtime "$HEAD_DIR" "head"
 
 
     # ============================================================
-    # 8. Generate / locate base specification
+    # 8. Generate / locate base specification (generation runs in adapter working-directory)
     # ============================================================
 
     - name: Generate or locate base specification
@@ -761,20 +807,30 @@ runs:
       run: |
         set -euo pipefail
 
-        cd "$BASE_DIR"
-
         if [[ -n "$GENERATE_COMMAND" ]]; then
           echo "Generating base OpenAPI specification..."
+          echo "Working directory: $WORKING_DIRECTORY"
+          echo "Generation command: $GENERATE_COMMAND"
+
+          if [[ ! -d "$BASE_DIR/$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != "." ]]; then
+            echo "::error::Base working directory does not exist: $BASE_DIR/$WORKING_DIRECTORY"
+            exit 1
+          fi
 
           if [[ -n "${BASE_PYTHON_VENV:-}" ]]; then
             source "$BASE_PYTHON_VENV/bin/activate"
           fi
 
-          eval "$GENERATE_COMMAND"
+          if [[ "$WORKING_DIRECTORY" == "." ]]; then
+            (cd "$BASE_DIR" && eval "$GENERATE_COMMAND")
+          else
+            (cd "$BASE_DIR/$WORKING_DIRECTORY" && eval "$GENERATE_COMMAND")
+          fi
         fi
 
-        if [[ ! -f "$SPEC_PATH" ]]; then
+        if [[ ! -f "$BASE_DIR/$SPEC_PATH" ]]; then
           echo "::error::Base specification not found: $BASE_DIR/$SPEC_PATH"
+          echo "::error::Verify spec-path, working-directory, and the adapter generation plan."
           exit 1
         fi
 
@@ -782,7 +838,7 @@ runs:
 
 
     # ============================================================
-    # 9. Generate / locate head specification
+    # 9. Generate / locate head specification (generation runs in adapter working-directory)
     # ============================================================
 
     - name: Generate or locate head specification
@@ -794,20 +850,30 @@ runs:
       run: |
         set -euo pipefail
 
-        cd "$HEAD_DIR"
-
         if [[ -n "$GENERATE_COMMAND" ]]; then
           echo "Generating head OpenAPI specification..."
+          echo "Working directory: $WORKING_DIRECTORY"
+          echo "Generation command: $GENERATE_COMMAND"
+
+          if [[ ! -d "$HEAD_DIR/$WORKING_DIRECTORY" && "$WORKING_DIRECTORY" != "." ]]; then
+            echo "::error::Head working directory does not exist: $HEAD_DIR/$WORKING_DIRECTORY"
+            exit 1
+          fi
 
           if [[ -n "${HEAD_PYTHON_VENV:-}" ]]; then
             source "$HEAD_PYTHON_VENV/bin/activate"
           fi
 
-          eval "$GENERATE_COMMAND"
+          if [[ "$WORKING_DIRECTORY" == "." ]]; then
+            (cd "$HEAD_DIR" && eval "$GENERATE_COMMAND")
+          else
+            (cd "$HEAD_DIR/$WORKING_DIRECTORY" && eval "$GENERATE_COMMAND")
+          fi
         fi
 
-        if [[ ! -f "$SPEC_PATH" ]]; then
+        if [[ ! -f "$HEAD_DIR/$SPEC_PATH" ]]; then
           echo "::error::Head specification not found: $HEAD_DIR/$SPEC_PATH"
+          echo "::error::Verify spec-path, working-directory, and the adapter generation plan."
           exit 1
         fi
 
