@@ -1089,7 +1089,7 @@ runs:
         JOB_ID="$(jq -r '.job_id // empty' "$RESPONSE_FILE")"
         INITIAL_STATUS="$(jq -r '.status // empty' "$RESPONSE_FILE")"
         INITIAL_GATE_STATUS="$(jq -r '.gate_status // empty' "$RESPONSE_FILE")"
-        INITIAL_REASON_CODE="$(jq -r '.reason_code // .execution_reason // empty' "$RESPONSE_FILE")"
+        INITIAL_REASON_CODE="$(jq -r '.reason_code // .gate_reason_code // empty' "$RESPONSE_FILE")"
         INITIAL_REPORT_URL="$(jq -r '.report_url // empty' "$RESPONSE_FILE")"
 
         if [[ -z "$COMPARISON_ID" ]]; then
